@@ -27,13 +27,10 @@ import {
   ArrowDown,
   Download,
   Loader2,
-  RefreshCw,
   ExternalLink,
   TrendingUp,
   TrendingDown,
   Search,
-  LayoutGrid,
-  List,
 } from "lucide-react"
 import {
   BarChart,
@@ -46,11 +43,11 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  Legend,
 } from "recharts"
 
-type SortField = "brand_name" | "total" | "recent" | "trend"
+type SortField = "brand_name" | "total" | "recent" | "trend" | "avgPerMonth" | "peakMonth" | "percentChange"
 type SortDirection = "asc" | "desc"
-type ViewMode = "cards" | "table"
 type Trend = "up" | "down" | "inactive"
 
 // Format month from "2026-01-01" to "Jan '26"
@@ -125,6 +122,76 @@ function getTrendFromRecentPrevious(opts: {
   return { trend: "down", pctLabel }
 }
 
+function getTrendFromConsecutiveMonths(opts: {
+  monthlyCounts: Array<{ month: string; count: number }>
+  sortedMonths: string[]
+}): { trend: Trend; pctLabel: string } {
+  const { monthlyCounts, sortedMonths } = opts
+
+  // Create a map for quick lookup - ensure we have counts for ALL months in the sorted list
+  const monthToCount = new Map<string, number>()
+  monthlyCounts.forEach(m => {
+    monthToCount.set(m.month, m.count)
+  })
+  
+  // Ensure all months in sortedMonths have entries (default to 0 if missing)
+  sortedMonths.forEach(month => {
+    if (!monthToCount.has(month)) {
+      monthToCount.set(month, 0)
+    }
+  })
+
+  // Calculate growth rates between consecutive months (1&2, 2&3, 3&4, etc.)
+  const growthRates: number[] = []
+  
+  for (let i = 0; i < sortedMonths.length - 1; i++) {
+    const currentMonth = sortedMonths[i]
+    const nextMonth = sortedMonths[i + 1]
+    const currentCount = monthToCount.get(currentMonth) || 0
+    const nextCount = monthToCount.get(nextMonth) || 0
+
+    // Skip if both are zero (no meaningful comparison)
+    if (currentCount === 0 && nextCount === 0) continue
+    
+    // If current is 0 and next has value, it's new activity (100% growth)
+    if (currentCount === 0 && nextCount > 0) {
+      growthRates.push(100)
+      continue
+    }
+    
+    // If current has value and next is 0, it's -100% (complete decline)
+    if (currentCount > 0 && nextCount === 0) {
+      growthRates.push(-100)
+      continue
+    }
+    
+    // Calculate percentage change: ((next - current) / current) * 100
+    const growthRate = ((nextCount - currentCount) / currentCount) * 100
+    growthRates.push(growthRate)
+  }
+
+  // If no valid comparisons, mark as inactive
+  if (growthRates.length === 0) {
+    const lastMonth = sortedMonths[sortedMonths.length - 1]
+    const lastCount = monthToCount.get(lastMonth) || 0
+    if (lastCount === 0) {
+      return { trend: "inactive", pctLabel: "—" }
+    }
+    // If there's data but no comparisons (only 1 month), show as new
+    return { trend: "up", pctLabel: "New" }
+  }
+
+  // Calculate average growth rate
+  const avgGrowthRate = growthRates.reduce((sum, rate) => sum + rate, 0) / growthRates.length
+  const clampedAvg = clampPercent(avgGrowthRate)
+  
+  const pctLabel = `${clampedAvg > 0 ? "+" : ""}${Math.round(clampedAvg)}%`
+
+  // Determine trend based on average
+  if (clampedAvg >= 0) return { trend: "up", pctLabel }
+  return { trend: "down", pctLabel }
+}
+
 function getTrendBadge(trend: Trend) {
   switch (trend) {
     case "up":
@@ -171,60 +238,74 @@ type BrandData = {
   lastActiveMonth: string
   monthlyData: { month: string; count: number }[]
   lastSixMonths: { month: string; count: number; label: string }[]
+  lastTwelveMonths: { month: string; count: number; label: string }[]
   trend: Trend
-  monthsTracked: number
   activeMonths: number
   firstMonth: string
   lastMonth: string
+  avgPerMonth?: number
+  peakMonth?: string
 }
 
 const fetcher = async (): Promise<BrandCreativeSummary[]> => {
   const supabase = getSupabaseClient()
+  // Fetch fresh data - SWR handles caching
   const { data, error } = await supabase
     .from("brand_creative_summary")
     .select("*")
     .not("brand_id", "is", null)
     .not("brand_name", "is", null)
-    .not("ads_library_url", "is", null)
     .not("month", "is", null)
     .not("creatives_count", "is", null)
     .order("month", { ascending: false })
 
-  if (error) throw error
-  return data || []
+  if (error) {
+    console.error("[Creative Summary] Fetch error:", error)
+    throw error
+  }
+  
+  // Normalize month format - Supabase returns date as ISO string, convert to YYYY-MM-01
+  const normalized = (data || []).map((row) => {
+    let monthStr = row.month
+    if (typeof monthStr === "string") {
+      // If it's an ISO date string, extract YYYY-MM-DD and ensure it's first of month
+      if (monthStr.includes("T")) {
+        monthStr = monthStr.split("T")[0]
+      }
+      // Ensure it's in YYYY-MM-01 format
+      const parts = monthStr.split("-")
+      if (parts.length >= 2) {
+        monthStr = `${parts[0]}-${parts[1]}-01`
+      }
+    }
+    return { ...row, month: monthStr }
+  })
+  
+  console.log(`[Creative Summary] Fetched ${normalized.length} rows`)
+  return normalized
 }
 
 export function CreativeSummaryTab() {
-  const { data, error, isLoading, mutate } = useSWR("creative-summary", fetcher)
-  const [isRefreshing, setIsRefreshing] = useState(false)
+  const { data, error, isLoading, mutate } = useSWR("creative-summary", fetcher, {
+    revalidateOnMount: true, // Always fetch fresh data on mount
+  })
   const [searchQuery, setSearchQuery] = useState("")
   const [sortField, setSortField] = useState<SortField>("total")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
-  const [viewMode, setViewMode] = useState<ViewMode>("cards")
+  const [topBrandsCount, setTopBrandsCount] = useState<5 | 10>(5)
+  const [dateFilter, setDateFilter] = useState<"3months" | "6months" | "12months">("12months")
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true)
-    await mutate()
-    setIsRefreshing(false)
-  }
 
   const globalMonths = useMemo(() => {
     const monthsInData = [...new Set((data || []).map((d) => d.month))].sort()
     const endMonth = monthsInData.at(-1) || monthStartUTC(new Date())
-    const lastSix = buildLastNMonths(endMonth, 6)
-    const recent = lastSix.at(-1) || endMonth
-    const previous = lastSix.at(-2) || recent
-    const canCompare = monthsInData.includes(previous)
-    return { endMonth, monthsInData, recent, previous, lastSix, canCompare }
+    const lastTwelve = buildLastNMonths(endMonth, 12) // Last 12 months for display and export
+    return { endMonth, monthsInData, lastTwelve }
   }, [data])
 
-  // Process data into brand summaries
+  // Process data into brand summaries (without trend calculation - that happens after filtering)
   const brandData = useMemo(() => {
     if (!data || data.length === 0) return []
-
-    const recentMonth = globalMonths.recent
-    const previousMonth = globalMonths.previous
-    const lastSixMonths = globalMonths.lastSix
 
     const brandMap: Record<string, BrandData> = {}
 
@@ -240,23 +321,18 @@ export function CreativeSummaryTab() {
           total: 0,
           recentCount: 0,
           previousCount: 0,
-          recentMonth,
-          previousMonth,
+          recentMonth: initMonth,
+          previousMonth: initMonth,
           percentChangeLabel: "—",
           lastActiveMonth: initMonth,
           monthlyData: [],
           lastSixMonths: [],
+          lastTwelveMonths: [],
           trend: "inactive",
-          monthsTracked: 0,
           activeMonths: 0,
           firstMonth: initMonth,
           lastMonth: initMonth,
         }
-      }
-      // Prefer the most recent name/url if they change over time
-      if (row.month === recentMonth) {
-        brandMap[id].brand_name = name
-        brandMap[id].ads_library_url = row.ads_library_url
       }
 
       brandMap[id].total += row.creatives_count
@@ -266,45 +342,27 @@ export function CreativeSummaryTab() {
       if (row.month > brandMap[id].lastMonth) brandMap[id].lastMonth = row.month
     }
 
-    // Calculate trends and recent counts (use global latest/previous months so "no activity" is visible)
+    // Build monthly data maps (trends calculated after filtering)
     for (const brand of Object.values(brandMap)) {
       const monthToCount: Record<string, number> = {}
       for (const m of brand.monthlyData) {
         monthToCount[m.month] = (monthToCount[m.month] || 0) + m.count
       }
 
-      const monthsTracked = Object.keys(monthToCount).length
-      const activeMonths = Object.values(monthToCount).filter((c) => c > 0).length
-
-      const recentCount = monthToCount[recentMonth] || 0
-      const previousCount = monthToCount[previousMonth] || 0
-
       brand.monthlyData = Object.entries(monthToCount)
         .map(([month, count]) => ({ month, count }))
         .sort((a, b) => a.month.localeCompare(b.month))
 
-      brand.monthsTracked = monthsTracked
-      brand.activeMonths = activeMonths
-      brand.recentCount = recentCount
-      brand.previousCount = previousCount
+      brand.activeMonths = Object.values(monthToCount).filter((c) => c > 0).length
 
-      const lastSix = lastSixMonths.map((m) => ({
+      // Build last 12 months for display
+      const lastTwelve = globalMonths.lastTwelve.map((m) => ({
         month: m,
         count: monthToCount[m] || 0,
         label: formatMonthShort(m),
       }))
-
-      const trendEval = getTrendFromRecentPrevious({
-        recentCount,
-        previousCount,
-        canCompare: globalMonths.canCompare,
-      })
-      brand.trend = trendEval.trend
-      brand.percentChangeLabel = trendEval.pctLabel
-
-      // Always show real last-6-months shape. For inactivity we rely on styling + recentCount == 0.
-      brand.lastSixMonths = lastSix
-
+      brand.lastTwelveMonths = lastTwelve
+      
       // Last active month (overall)
       const lastActive = [...brand.monthlyData].reverse().find((m) => m.count > 0)?.month
       brand.lastActiveMonth = lastActive || brand.lastMonth
@@ -313,15 +371,130 @@ export function CreativeSummaryTab() {
     return Object.values(brandMap)
   }, [data, globalMonths])
 
-  // Filter and sort
+  // Filter by months (since data is aggregated by month)
+  const getDateFilterRange = useMemo(() => {
+    const endMonth = globalMonths.endMonth
+    let monthsToInclude = 0
+    
+    switch (dateFilter) {
+      case "3months":
+        monthsToInclude = 3
+        break
+      case "6months":
+        monthsToInclude = 6
+        break
+      case "12months":
+        monthsToInclude = 12
+        break
+      default:
+        monthsToInclude = 12
+    }
+    
+    // Get the last N months from the end month
+    const filteredMonths = buildLastNMonths(endMonth, monthsToInclude)
+    const startMonth = filteredMonths[0]
+    const endMonthFiltered = filteredMonths[filteredMonths.length - 1]
+    
+    // Calculate recent and previous months FROM THE FILTERED RANGE
+    // Sort to ensure we get the correct last and second-to-last months
+    const sortedFilteredMonths = [...filteredMonths].sort()
+    const recentMonth = sortedFilteredMonths[sortedFilteredMonths.length - 1] || endMonthFiltered
+    const previousMonth = sortedFilteredMonths.length >= 2 
+      ? sortedFilteredMonths[sortedFilteredMonths.length - 2] 
+      : recentMonth
+    
+    return { 
+      start: startMonth, 
+      end: endMonthFiltered, 
+      months: filteredMonths,
+      recentMonth,
+      previousMonth,
+      canCompare: sortedFilteredMonths.length >= 2 && monthsToInclude >= 2
+    }
+  }, [dateFilter, globalMonths.endMonth])
+
+  // Filter and sort - recalculate all metrics based on date filter
   const filteredBrands = useMemo(() => {
     let result = brandData
 
+    // Search filter
     if (searchQuery) {
-      const q = searchQuery.toLowerCase()
+      const q = searchQuery.toLowerCase().trim()
       result = result.filter(b => b.brand_name.toLowerCase().includes(q))
     }
 
+    // Apply date filter and recalculate metrics (month-based)
+    const dateRange = getDateFilterRange
+    const monthsSet = new Set(dateRange.months)
+    
+    result = result.map(brand => {
+      // Filter monthly data to only include months in the filter range
+      const filteredMonthlyData = brand.monthlyData.filter(m => monthsSet.has(m.month))
+      const filteredTotal = filteredMonthlyData.reduce((sum, m) => sum + m.count, 0)
+      
+      // Sort filtered months to ensure correct order
+      const sortedFilteredMonths = [...dateRange.months].sort()
+      const recentMonth = sortedFilteredMonths[sortedFilteredMonths.length - 1] || dateRange.end
+      const previousMonth = sortedFilteredMonths[0] || dateRange.start
+      
+      // Create a map for quick lookup
+      const monthToCountMap = new Map<string, number>()
+      filteredMonthlyData.forEach(m => {
+        monthToCountMap.set(m.month, m.count)
+      })
+      
+      // Calculate growth by comparing consecutive months (1&2, 2&3, 3&4, etc.) and averaging
+      // This gives the mean growth rate over the entire selected period
+      const sortedMonths = [...dateRange.months].sort()
+      
+      // Get recent count for display (last month in period)
+      const recentCount = monthToCountMap.get(recentMonth) || 0
+      
+      // IMPORTANT: Calculate trend based on consecutive month comparisons using ONLY filtered data
+      // For 6 months: compares 1&2, 2&3, 3&4, 4&5, 5&6 and averages the growth rates
+      // This ensures the percentage changes when the date filter changes
+      const trendEval = getTrendFromConsecutiveMonths({
+        monthlyCounts: filteredMonthlyData.map(m => ({ month: m.month, count: m.count })),
+        sortedMonths: sortedMonths,
+      })
+      
+      // Recalculate avg/month and peak month
+      const activeMonths = filteredMonthlyData.filter(m => m.count > 0).length
+      const avgPerMonth = activeMonths > 0 ? filteredTotal / activeMonths : 0
+      const peakMonthData = filteredMonthlyData.length > 0 
+        ? filteredMonthlyData.reduce((max, m) => m.count > max.count ? m : max, filteredMonthlyData[0])
+        : { month: "", count: 0 }
+      const peakMonth = peakMonthData.count > 0 ? formatMonthShort(peakMonthData.month) : "N/A"
+      
+      // Build filtered last N months for display (based on filter)
+      const filteredDisplayMonths = dateRange.months.map((m) => {
+        const monthData = filteredMonthlyData.find(d => d.month === m)
+        return {
+          month: m,
+          count: monthData?.count || 0,
+          label: formatMonthShort(m),
+        }
+      })
+      
+      return {
+        ...brand,
+        monthlyData: filteredMonthlyData,
+        total: filteredTotal,
+        recentCount,
+        previousCount: monthToCountMap.get(previousMonth) || 0, // Keep for compatibility
+        recentMonth,
+        previousMonth,
+        trend: trendEval.trend,
+        percentChangeLabel: trendEval.pctLabel,
+        avgPerMonth: Math.round(avgPerMonth),
+        peakMonth,
+        activeMonths,
+        // Update display months to show filtered range
+        lastTwelveMonths: filteredDisplayMonths,
+      }
+    }).filter(b => b.total > 0) // Only show brands with data in range
+
+    // Sort - ensure proper comparison
     result.sort((a, b) => {
       let cmp = 0
       switch (sortField) {
@@ -337,33 +510,94 @@ export function CreativeSummaryTab() {
         case "trend":
           const trendOrder = { up: 2, down: 1, inactive: 0 }
           cmp = trendOrder[a.trend] - trendOrder[b.trend]
+          // If same trend, sort by recent count
+          if (cmp === 0) {
+            cmp = a.recentCount - b.recentCount
+          }
           break
+        case "avgPerMonth":
+          cmp = (a.avgPerMonth || 0) - (b.avgPerMonth || 0)
+          break
+        case "peakMonth":
+          // Sort by peak month date (more recent = higher)
+          cmp = a.peakMonth?.localeCompare(b.peakMonth || "") || 0
+          break
+        case "percentChange":
+          // Extract numeric value from percentChangeLabel (e.g., "+18%" -> 18, "-5%" -> -5)
+          const getPercentValue = (label: string): number => {
+            if (label === "—" || label === "New") return 0
+            const match = label.match(/([+-]?\d+)/)
+            return match ? parseInt(match[1]) : 0
+          }
+          cmp = getPercentValue(a.percentChangeLabel) - getPercentValue(b.percentChangeLabel)
+          break
+        default:
+          cmp = 0
       }
+      // desc = descending (high to low) = reverse comparison
+      // asc = ascending (low to high) = normal comparison
       return sortDirection === "desc" ? -cmp : cmp
     })
 
     return result
-  }, [brandData, searchQuery, sortField, sortDirection])
+  }, [brandData, searchQuery, sortField, sortDirection, getDateFilterRange])
 
-  // Summary stats
+  // Summary stats (based on filtered data)
   const stats = useMemo(() => {
-    const totalBrands = brandData.length
-    const totalCreatives = brandData.reduce((sum, b) => sum + b.total, 0)
-    const growingBrands = brandData.filter(b => b.trend === "up").length
-    const allMonths = new Set(data?.map(d => d.month) || [])
-    return { totalBrands, totalCreatives, growingBrands, totalMonths: allMonths.size }
-  }, [brandData, data])
+    const totalBrands = filteredBrands.length
+    const totalCreatives = filteredBrands.reduce((sum, b) => sum + b.total, 0)
+    const growingBrands = filteredBrands.filter(b => b.trend === "up").length
+    const dateRange = getDateFilterRange
+    return { 
+      totalBrands, 
+      totalCreatives, 
+      growingBrands, 
+      totalMonths: dateRange.months.length 
+    }
+  }, [filteredBrands, getDateFilterRange])
 
-  // Chart data - always Top 5 by total volume (not affected by search/sort)
+  // Chart data - Top N by total volume with monthly data for line chart (uses filtered data)
   const chartData = useMemo(() => {
-    const sorted = [...brandData].sort((a, b) => b.total - a.total)
-    return sorted.slice(0, 5).map((b) => ({
-      name: b.brand_name.length > 22 ? b.brand_name.substring(0, 22) + "…" : b.brand_name,
-      fullName: b.brand_name,
-      total: b.total,
-      recent: b.recentCount,
-    }))
-  }, [brandData])
+    const sorted = [...filteredBrands].sort((a, b) => b.total - a.total)
+    const topBrands = sorted.slice(0, topBrandsCount)
+    
+    // Get months from the filtered range
+    const dateRange = getDateFilterRange
+    const sortedMonths = [...dateRange.months].sort()
+    
+    // Generate colors for each brand
+    const colors = [
+      "#3b82f6", // blue
+      "#10b981", // green
+      "#f59e0b", // amber
+      "#ef4444", // red
+      "#8b5cf6", // violet
+      "#ec4899", // pink
+      "#06b6d4", // cyan
+      "#84cc16", // lime
+      "#f97316", // orange
+      "#6366f1", // indigo
+    ]
+    
+    // Create data structure for line chart using filtered months
+    const lineChartData = sortedMonths.map(month => {
+      const dataPoint: Record<string, any> = { month, monthLabel: formatMonthShort(month) }
+      topBrands.forEach((brand) => {
+        const monthData = brand.lastTwelveMonths.find(m => m.month === month)
+        dataPoint[brand.brand_name] = monthData?.count || 0
+      })
+      return dataPoint
+    })
+    
+    return {
+      data: lineChartData,
+      brands: topBrands.map((brand, index) => ({
+        name: brand.brand_name,
+        color: colors[index % colors.length],
+        total: brand.total,
+      })),
+    }
+  }, [filteredBrands, topBrandsCount, getDateFilterRange])
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -374,17 +608,70 @@ export function CreativeSummaryTab() {
     }
   }
 
+
   const exportCSV = () => {
-    if (!data) return
-    const headers = ["Brand Name", "Month", "Creatives Count", "Ads Library URL"]
-    const rows = data.map(d => [d.brand_name, d.month, d.creatives_count, d.ads_library_url || ""])
-    const csv = [headers, ...rows].map(r => r.join(",")).join("\n")
-    const blob = new Blob([csv], { type: "text/csv" })
+    if (!filteredBrands || filteredBrands.length === 0) return
+
+    // Use filtered months for export (based on current date filter)
+    const dateRange = getDateFilterRange
+    const exportMonths = dateRange.months.map(m => m.substring(0, 7)) // YYYY-MM format
+
+    // Build monthly data map for each brand
+    const brandMonthlyData: Record<string, Record<string, number>> = {}
+    filteredBrands.forEach(brand => {
+      brandMonthlyData[brand.brand_id] = {}
+      brand.monthlyData.forEach(m => {
+        const monthKey = m.month.substring(0, 7) // Get YYYY-MM format
+        if (exportMonths.includes(monthKey)) {
+          brandMonthlyData[brand.brand_id][monthKey] = m.count
+        }
+      })
+    })
+
+    // Calculate total for filtered range
+    const calculateFilteredTotal = (brand: BrandData) => {
+      return brand.monthlyData
+        .filter(m => exportMonths.includes(m.month.substring(0, 7)))
+        .reduce((sum, m) => sum + m.count, 0)
+    }
+
+    // Build CSV rows
+    const headers = [
+      'page_name',
+      'Ads Library Link',
+      ...exportMonths,
+      'Total'
+    ]
+
+    const rows = filteredBrands.map(brand => {
+      const monthlyValues = exportMonths.map(m => brandMonthlyData[brand.brand_id]?.[m] || 0)
+      const total = calculateFilteredTotal(brand)
+
+      return [
+        brand.brand_name,
+        brand.ads_library_url || '',
+        ...monthlyValues,
+        total
+      ]
+    })
+
+    // Escape CSV values
+    const escapeCSV = (val: any) => {
+      const str = String(val)
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`
+      }
+      return str
+    }
+
+    const csv = [headers.map(escapeCSV), ...rows.map(r => r.map(escapeCSV))].map(r => r.join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
+    const a = document.createElement('a')
     a.href = url
-    a.download = `creative-summary-${new Date().toISOString().split("T")[0]}.csv`
+    a.download = `creative-summary-${dateFilter}-${new Date().toISOString().split('T')[0]}.csv`
     a.click()
+    URL.revokeObjectURL(url)
   }
 
   if (isLoading) {
@@ -400,9 +687,7 @@ export function CreativeSummaryTab() {
       <Card className="border-destructive">
         <CardContent className="pt-6">
           <p className="text-destructive">Failed to load data: {error.message}</p>
-          <Button onClick={handleRefresh} variant="outline" className="mt-4 bg-transparent">
-            <RefreshCw className="mr-2 h-4 w-4" /> Retry
-          </Button>
+          <p className="text-sm text-muted-foreground mt-2">Data will auto-refresh automatically.</p>
         </CardContent>
       </Card>
     )
@@ -442,49 +727,87 @@ export function CreativeSummaryTab() {
             <p className="text-2xl font-bold text-green-600">{stats.growingBrands}</p>
           </CardContent>
         </Card>
-        <Card className="overflow-hidden bg-gradient-to-br from-amber-500/10 via-card to-card">
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground flex items-center gap-2">
-              <span className="text-base leading-none">🗓️</span>
-              Months Tracked
-            </p>
-            <p className="text-2xl font-bold">{stats.totalMonths}</p>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Chart */}
-      {chartData.length > 0 && (
+      {chartData.data.length > 0 && (
         <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-indigo-500/12 via-card to-card">
           <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <span className="text-base leading-none">🏆</span>
-              Top 5 Brands by Creative Volume
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <span className="text-base leading-none">🏆</span>
+                Top {topBrandsCount} Brands by Creative Volume
+              </CardTitle>
+              <div className="flex gap-2">
+                <Button
+                  variant={topBrandsCount === 5 ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setTopBrandsCount(5)}
+                >
+                  Top 5
+                </Button>
+                <Button
+                  variant={topBrandsCount === 10 ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setTopBrandsCount(10)}
+                >
+                  Top 10
+                </Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="h-[250px]">
+            <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} layout="vertical" margin={{ left: 120, right: 20 }}>
-                  <CartesianGrid strokeDasharray="4 8" horizontal={true} vertical={false} opacity={0.25} />
-                  <XAxis type="number" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="name" width={115} tick={{ fontSize: 12 }} />
-                  <Tooltip 
-                    formatter={(value: number) => [value, "Total Creatives"]}
-                    labelFormatter={(_, payload) => (payload?.[0] as any)?.payload?.fullName ?? _}
-                    contentStyle={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: 10 }}
+                <LineChart data={chartData.data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="4 8" stroke="var(--border)" opacity={0.25} />
+                  <XAxis 
+                    dataKey="monthLabel" 
+                    tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+                    axisLine={false}
+                    tickLine={false}
                   />
-                  <Bar dataKey="total" radius={[0, 6, 6, 0]}>
-                    {chartData.map((_, index) => (
-                      <Cell
-                        key={index}
-                        fill="var(--chart-2)"
-                        fillOpacity={index === 0 ? 0.95 : Math.max(0.35, 0.75 - index * 0.1)}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
+                  <YAxis 
+                    tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip 
+                    contentStyle={{ 
+                      background: "var(--background)", 
+                      border: "1px solid var(--border)", 
+                      borderRadius: 10,
+                      padding: "8px 12px"
+                    }}
+                  />
+                  {chartData.brands.map((brand, index) => (
+                    <Line
+                      key={brand.name}
+                      type="monotone"
+                      dataKey={brand.name}
+                      stroke={brand.color}
+                      strokeWidth={2.5}
+                      dot={{ r: 4, fill: brand.color }}
+                      activeDot={{ r: 6 }}
+                      name={brand.name}
+                    />
+                  ))}
+                </LineChart>
               </ResponsiveContainer>
+            </div>
+            {/* Legend with colors - single legend below chart */}
+            <div className="mt-4 flex flex-wrap gap-4 justify-center">
+              {chartData.brands.map((brand) => (
+                <div key={brand.name} className="flex items-center gap-2">
+                  <div 
+                    className="w-3 h-3 rounded-full" 
+                    style={{ backgroundColor: brand.color }}
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {brand.name.length > 25 ? brand.name.substring(0, 25) + "…" : brand.name}
+                  </span>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
@@ -492,7 +815,7 @@ export function CreativeSummaryTab() {
 
       {/* Controls */}
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-        <div className="flex items-center gap-2 w-full sm:w-auto">
+        <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
           <div className="relative flex-1 sm:w-64">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -502,48 +825,47 @@ export function CreativeSummaryTab() {
               className="pl-9"
             />
           </div>
-          <Select value={sortField} onValueChange={(v) => setSortField(v as SortField)}>
+          <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as typeof dateFilter)}>
             <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Time Period" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="3months">Last 3 Months</SelectItem>
+              <SelectItem value="6months">Last 6 Months</SelectItem>
+              <SelectItem value="12months">Last 12 Months</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={sortField} onValueChange={(v) => {
+            const newField = v as SortField
+            if (sortField === newField) {
+              setSortDirection(d => d === "asc" ? "desc" : "asc")
+            } else {
+              setSortField(newField)
+              setSortDirection("desc")
+            }
+          }}>
+            <SelectTrigger className="w-[160px]">
               <SelectValue placeholder="Sort by" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="total">Total Volume</SelectItem>
               <SelectItem value="recent">Recent Activity</SelectItem>
+              <SelectItem value="percentChange">Growth %</SelectItem>
               <SelectItem value="trend">Trend</SelectItem>
-              <SelectItem value="brand_name">Name</SelectItem>
+              <SelectItem value="avgPerMonth">Avg/Month</SelectItem>
+              <SelectItem value="brand_name">Brand Name</SelectItem>
             </SelectContent>
           </Select>
           <Button
             variant="outline"
             size="icon"
             onClick={() => setSortDirection(d => d === "asc" ? "desc" : "asc")}
+            title={sortDirection === "desc" ? "Sorting: High to Low (Descending)" : "Sorting: Low to High (Ascending)"}
           >
             {sortDirection === "desc" ? <ArrowDown className="h-4 w-4" /> : <ArrowUp className="h-4 w-4" />}
           </Button>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex border rounded-md">
-            <Button
-              variant={viewMode === "cards" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setViewMode("cards")}
-              className="rounded-r-none"
-            >
-              <LayoutGrid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === "table" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setViewMode("table")}
-              className="rounded-l-none"
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
-          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
           <Button variant="outline" size="sm" onClick={exportCSV}>
             <Download className="mr-2 h-4 w-4" />
             Export
@@ -552,7 +874,7 @@ export function CreativeSummaryTab() {
       </div>
 
       {/* Brand Cards View */}
-      {viewMode === "cards" && (
+      {(
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredBrands.map((brand) => (
             <Card key={brand.brand_id} className="hover:border-primary/50 transition-colors">
@@ -561,7 +883,6 @@ export function CreativeSummaryTab() {
                   <div className="flex-1 min-w-0">
                     <CardTitle className="text-base truncate">{brand.brand_name}</CardTitle>
                     <CardDescription className="text-xs">
-                      {brand.monthsTracked} month{brand.monthsTracked !== 1 ? "s" : ""} tracked ·{" "}
                       {formatMonthShort(brand.firstMonth)} – {formatMonthShort(brand.lastMonth)}
                     </CardDescription>
                   </div>
@@ -580,13 +901,13 @@ export function CreativeSummaryTab() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {/* Sparkline for last 6 months */}
+                  {/* Sparkline for last 12 months */}
                   <div className="h-14 w-full">
                     {(() => {
                       const badge = getTrendBadge(brand.trend)
                       return (
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={brand.lastSixMonths} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                          <LineChart data={brand.lastTwelveMonths} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                             <XAxis dataKey="label" hide />
                             <YAxis
                               hide
@@ -618,18 +939,24 @@ export function CreativeSummaryTab() {
                     })()}
                   </div>
 
-                  {/* Month labels for the sparkline */}
-                  <div className="flex items-center justify-between px-1 text-[10px] text-muted-foreground">
-                    {brand.lastSixMonths.map((m) => (
-                      <span key={m.month}>{monthAbbrev(m.label)}</span>
+                  {/* Month labels for the sparkline (show every 2nd month to avoid crowding) */}
+                  <div className="flex items-center justify-between px-1 text-[9px] text-muted-foreground">
+                    {brand.lastTwelveMonths.map((m, idx) => (
+                      idx % 2 === 0 ? <span key={m.month}>{monthAbbrev(m.label)}</span> : <span key={m.month} className="opacity-0">{monthAbbrev(m.label)}</span>
                     ))}
                   </div>
 
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>
-                      {formatMonthShort(brand.previousMonth)} → {formatMonthShort(brand.recentMonth)}
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      Period Growth
                     </span>
-                    <span className="font-medium text-foreground">{brand.percentChangeLabel}</span>
+                    <span className={`font-bold text-lg ${
+                      brand.trend === "up" ? "text-green-600 dark:text-green-400" :
+                      brand.trend === "down" ? "text-red-600 dark:text-red-400" :
+                      "text-muted-foreground"
+                    }`}>
+                      {brand.percentChangeLabel}
+                    </span>
                   </div>
 
                   {brand.trend === "inactive" && (
@@ -645,7 +972,7 @@ export function CreativeSummaryTab() {
                     </div>
                     <div className="text-right">
                       <p className="text-lg font-semibold">{brand.recentCount}</p>
-                      <p className="text-xs text-muted-foreground">Latest ({formatMonthShort(brand.recentMonth)})</p>
+                      <p className="text-xs text-muted-foreground">Latest Month</p>
                     </div>
                   </div>
 
@@ -667,8 +994,8 @@ export function CreativeSummaryTab() {
         </div>
       )}
 
-      {/* Table View */}
-      {viewMode === "table" && (
+      {/* Table View - Removed */}
+      {false && (
         <Card>
           <CardContent className="p-0">
             <Table>
@@ -682,10 +1009,10 @@ export function CreativeSummaryTab() {
                   </TableHead>
                   <TableHead className="text-center">
                     <div className="flex flex-col items-center gap-1 py-1">
-                      <span>Monthly Activity</span>
-                      <div className="flex items-center justify-center gap-1 text-[10px] text-muted-foreground">
-                        {globalMonths.lastSix.map((m) => (
-                          <span key={m} className="w-4 text-center">
+                      <span>Monthly Activity (Last 12 Months)</span>
+                      <div className="flex items-center justify-center gap-0.5 text-[9px] text-muted-foreground">
+                        {globalMonths.lastTwelve.map((m) => (
+                          <span key={m} className="w-3 text-center" title={formatMonthShort(m)}>
                             {monthAbbrev(formatMonthShort(m))}
                           </span>
                         ))}
@@ -693,16 +1020,16 @@ export function CreativeSummaryTab() {
                     </div>
                   </TableHead>
                   <TableHead className="text-right">
-                    <Button variant="ghost" size="sm" onClick={() => handleSort("recent")} className="-mr-3">
-                      Recent
-                      {sortField === "recent" && (sortDirection === "asc" ? <ArrowUp className="ml-1 h-3 w-3" /> : <ArrowDown className="ml-1 h-3 w-3" />)}
-                    </Button>
-                  </TableHead>
-                  <TableHead className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => handleSort("total")} className="-mr-3">
                       Total
                       {sortField === "total" && (sortDirection === "asc" ? <ArrowUp className="ml-1 h-3 w-3" /> : <ArrowDown className="ml-1 h-3 w-3" />)}
                     </Button>
+                  </TableHead>
+                  <TableHead className="text-center">
+                    <span className="text-xs text-muted-foreground">Avg/Month</span>
+                  </TableHead>
+                  <TableHead className="text-center">
+                    <span className="text-xs text-muted-foreground">Peak Month</span>
                   </TableHead>
                   <TableHead className="text-center">
                     <Button variant="ghost" size="sm" onClick={() => handleSort("trend")}>
@@ -718,24 +1045,44 @@ export function CreativeSummaryTab() {
                   <TableRow key={brand.brand_id}>
                     <TableCell className="font-medium">{brand.brand_name}</TableCell>
                     <TableCell>
-                      <div className="flex items-end gap-1 justify-center h-8">
-                        {brand.lastSixMonths.map((m) => {
-                          const maxCount = Math.max(...brand.lastSixMonths.map((d) => d.count))
-                          const heightPct = maxCount > 0 ? (m.count / maxCount) * 100 : 0
-                          const isZero = m.count === 0
-                          return (
-                            <div
-                              key={m.month}
-                              title={`${m.label}: ${m.count}`}
-                              className={`w-4 rounded-sm ${isZero ? "bg-muted" : "bg-primary/70"}`}
-                              style={{ height: isZero ? 3 : `${Math.max(10, heightPct)}%` }}
-                            />
-                          )
-                        })}
+                      <div className="flex items-end gap-0.5 justify-center h-8 relative">
+                        {(() => {
+                          // Get last 12 months data for this brand
+                          const lastTwelveData = globalMonths.lastTwelve.map(month => {
+                            const monthData = brand.monthlyData.find(m => m.month === month)
+                            return {
+                              month,
+                              count: monthData?.count || 0,
+                              label: formatMonthShort(month)
+                            }
+                          })
+                          const maxCount = Math.max(...lastTwelveData.map((d) => d.count), 1)
+                          
+                          return lastTwelveData.map((m) => {
+                            const heightPct = maxCount > 0 ? (m.count / maxCount) * 100 : 0
+                            const isZero = m.count === 0
+                            return (
+                              <div
+                                key={m.month}
+                                className={`w-3 rounded-sm cursor-pointer transition-all hover:opacity-80 hover:ring-2 hover:ring-primary/50 relative group ${isZero ? "bg-muted" : "bg-primary/70"}`}
+                                style={{ height: isZero ? 2 : `${Math.max(8, heightPct)}%` }}
+                              >
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none bg-popover text-popover-foreground text-xs px-2 py-1 rounded shadow-lg border border-border whitespace-nowrap z-50">
+                                  {m.label}: {m.count} creatives
+                                </div>
+                              </div>
+                            )
+                          })
+                        })()}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right font-medium">{brand.recentCount}</TableCell>
                     <TableCell className="text-right font-bold">{brand.total}</TableCell>
+                    <TableCell className="text-center text-sm text-muted-foreground">
+                      {brand.avgPerMonth ?? 0}
+                    </TableCell>
+                    <TableCell className="text-center text-sm text-muted-foreground">
+                      {brand.peakMonth || "—"}
+                    </TableCell>
                     <TableCell className="text-center">
                       {brand.trend === "up" && <TrendingUp className="h-4 w-4 text-green-600 mx-auto" />}
                       {brand.trend === "down" && <TrendingDown className="h-4 w-4 text-red-600 mx-auto" />}

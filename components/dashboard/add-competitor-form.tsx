@@ -33,7 +33,6 @@ type IngestResult = {
 export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
   const [adsLibraryUrl, setAdsLibraryUrl] = useState("")
   const [brandName, setBrandName] = useState("")
-  const [count, setCount] = useState("10")
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<IngestResult | null>(null)
 
@@ -44,6 +43,7 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
 
     try {
       // Use our API route which can call edge function with service role key
+      // Fetch trailing 12 months automatically
       const response = await fetch("/api/ingest", {
         method: "POST",
         headers: {
@@ -52,7 +52,6 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
         body: JSON.stringify({
           ads_library_url: adsLibraryUrl,
           brand_name: brandName || undefined,
-          count: parseInt(count) || 10,
         }),
       })
 
@@ -69,7 +68,6 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
         // Clear form on success
         setAdsLibraryUrl("")
         setBrandName("")
-        setCount("10")
         
         // Call onSuccess callback to refresh dashboard data
         if (onSuccess) {
@@ -115,38 +113,19 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="brand-name">Brand Name (Optional)</Label>
-              <Input
-                id="brand-name"
-                type="text"
-                placeholder="e.g., Competitor Name"
-                value={brandName}
-                onChange={(e) => setBrandName(e.target.value)}
-                className="bg-muted border-border"
-              />
-              <p className="text-xs text-muted-foreground">
-                Leave empty to auto-extract from URL.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="count">Number of Creatives</Label>
-              <Input
-                id="count"
-                type="number"
-                min="1"
-                max="100"
-                placeholder="10"
-                value={count}
-                onChange={(e) => setCount(e.target.value)}
-                className="bg-muted border-border"
-              />
-              <p className="text-xs text-muted-foreground">
-                How many latest creatives to fetch (default: 10).
-              </p>
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="brand-name">Brand Name (Optional)</Label>
+            <Input
+              id="brand-name"
+              type="text"
+              placeholder="e.g., Competitor Name"
+              value={brandName}
+              onChange={(e) => setBrandName(e.target.value)}
+              className="bg-muted border-border"
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave empty to auto-extract from URL. System will automatically fetch last 12 months of data.
+            </p>
           </div>
 
           <Button 

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import React from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { CreativeSummaryTab } from "./creative-summary-tab"
@@ -21,6 +22,16 @@ export function Dashboard() {
     // Close the form after successful submission
     setIsFormOpen(false)
   }
+
+  // Auto-refresh data periodically to catch ingestion updates
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      mutate("creative-summary")
+      mutate("funnel-summary")
+    }, 15000) // Refresh every 15 seconds
+
+    return () => clearInterval(interval)
+  }, [mutate])
 
   return (
     <div className="min-h-screen bg-background text-foreground">

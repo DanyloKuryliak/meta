@@ -33,13 +33,13 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
-  RefreshCw,
   ExternalLink,
   Link2,
   Smartphone,
   FileQuestion,
   Globe,
   Info,
+  Search,
 } from "lucide-react"
 import {
   BarChart,
@@ -135,23 +135,41 @@ const fetcher = async (): Promise<BrandFunnelSummary[]> => {
     .gt("creatives_count", 0)
     .order("month", { ascending: false })
 
-  if (error) throw error
-  return data || []
+  if (error) {
+    console.error("[Funnel Summary] Fetch error:", error)
+    throw error
+  }
+  
+  // Normalize month format - Supabase returns date as ISO string, convert to YYYY-MM-01
+  const normalized = (data || []).map((row) => {
+    let monthStr = row.month
+    if (typeof monthStr === "string") {
+      // If it's an ISO date string, extract YYYY-MM-DD and ensure it's first of month
+      if (monthStr.includes("T")) {
+        monthStr = monthStr.split("T")[0]
+      }
+      // Ensure it's in YYYY-MM-01 format
+      const parts = monthStr.split("-")
+      if (parts.length >= 2) {
+        monthStr = `${parts[0]}-${parts[1]}-01`
+      }
+    }
+    return { ...row, month: monthStr }
+  })
+  
+  console.log(`[Funnel Summary] Fetched ${normalized.length} rows`)
+  return normalized
 }
 
 export function FunnelSummaryTab() {
-  const { data, error, isLoading, mutate } = useSWR("funnel-summary", fetcher)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true)
-    await mutate()
-    setIsRefreshing(false)
-  }
+  const { data, error, isLoading, mutate } = useSWR("funnel-summary", fetcher, {
+    revalidateOnMount: true, // Always fetch fresh data on mount
+  })
 
   const [selectedBrands, setSelectedBrands] = useState<string[]>([])
   const [selectedTypes, setSelectedTypes] = useState<FunnelType[]>([])
-  const [domainSearch, setDomainSearch] = useState("")
+  const [selectedNiches, setSelectedNiches] = useState<FunnelType[]>([])
+  const [brandSearch, setBrandSearch] = useState("")
   const [startMonth, setStartMonth] = useState<string>("")
   const [startYear, setStartYear] = useState<string>("")
   const [endMonth, setEndMonth] = useState<string>("")
@@ -176,8 +194,17 @@ export function FunnelSummaryTab() {
     { value: "12", label: "December" },
   ]
 
+
   const availableYears = useMemo(() => {
-    if (!data) return ["2024", "2025", "2026"]
+    if (!data) {
+      // Dynamically generate years based on current year
+      const currentYear = new Date().getFullYear()
+      const years: string[] = []
+      for (let i = currentYear - 2; i <= currentYear + 1; i++) {
+        years.push(String(i))
+      }
+      return years
+    }
     const years = new Set(data.map((d) => d.month.substring(0, 4)))
     return Array.from(years).sort()
   }, [data])
@@ -186,6 +213,9 @@ export function FunnelSummaryTab() {
     if (!data) return []
     return [...new Set(data.map((d) => d.brand_name))].sort()
   }, [data])
+
+  // Removed type-based filtering since type detection is unreliable
+  const uniqueNiches: FunnelType[] = []
 
   const formatMonth = (month: string) => formatMonthShort(month)
 
@@ -200,51 +230,31 @@ export function FunnelSummaryTab() {
 
     const startKey = startYear && startMonth ? `${startYear}-${startMonth}` : null
     const endKey = endYear && endMonth ? `${endYear}-${endMonth}` : null
+    const brandSearchLower = brandSearch.toLowerCase().trim()
 
     return data.filter((item) => {
-      if (selectedBrands.length > 0 && !selectedBrands.includes(item.brand_name)) {
+      // Brand search filter
+      if (brandSearchLower && !item.brand_name.toLowerCase().includes(brandSearchLower)) {
         return false
       }
-      if (selectedTypes.length > 0 && !selectedTypes.includes(item.funnel_type as FunnelType)) {
-        return false
-      }
-      if (domainSearch && !item.funnel_domain.toLowerCase().includes(domainSearch.toLowerCase())) {
-        return false
-      }
+      
+      // Date range filter - compare month strings (YYYY-MM format)
       const itemKey = monthKeyFromDateStr(item.month)
       if (startKey && itemKey < startKey) return false
       if (endKey && itemKey > endKey) return false
+      
+      // Last month filter
       if (showLastMonth && !isWithinLastMonth(item.month)) return false
+      
       return true
     })
-  }, [data, selectedBrands, selectedTypes, domainSearch, startMonth, startYear, endMonth, endYear, showLastMonth])
+  }, [data, brandSearch, startMonth, startYear, endMonth, endYear, showLastMonth])
 
-  // Stats by funnel type
-  const statsByType = useMemo(() => {
-    const stats: Record<FunnelType, { count: number; creatives: number }> = {
-      tracking_link: { count: 0, creatives: 0 },
-      app_store: { count: 0, creatives: 0 },
-      quiz_funnel: { count: 0, creatives: 0 },
-      landing_page: { count: 0, creatives: 0 },
-      unknown: { count: 0, creatives: 0 },
-    }
-    filteredData.forEach((item) => {
-      const type = (item.funnel_type || "landing_page") as FunnelType
-      stats[type].count++
-      stats[type].creatives += item.creatives_count
-    })
-    return stats
-  }, [filteredData])
-
-  const pieChartData = useMemo(() => {
-    return Object.entries(statsByType)
-      .filter(([, stats]) => stats.creatives > 0)
-      .map(([type, stats]) => ({
-        name: FUNNEL_TYPE_CONFIG[type as FunnelType].label,
-        value: stats.creatives,
-        color: FUNNEL_TYPE_CONFIG[type as FunnelType].color,
-      }))
-  }, [statsByType])
+  // Removed type-based stats since type detection is unreliable
+  // Calculate simple stats instead
+  const totalFunnels = filteredData.length
+  const totalCreatives = filteredData.reduce((sum, item) => sum + item.creatives_count, 0)
+  const uniqueDomains = new Set(filteredData.map(item => item.funnel_domain)).size
 
   const groupedByDomain = useMemo(() => {
     const groups: Record<string, BrandFunnelSummary[]> = {}
@@ -258,13 +268,14 @@ export function FunnelSummaryTab() {
         let comparison = 0
         if (sortField === "creatives_count") {
           comparison = a.creatives_count - b.creatives_count
-        } else {
+        } else if (sortField === "month") {
           comparison = a.month.localeCompare(b.month)
         }
         return sortDirection === "asc" ? comparison : -comparison
       })
     })
 
+    // Sort domains by total creatives (descending by default)
     const sortedEntries = Object.entries(groups).sort((a, b) => {
       const totalA = a[1].reduce((sum, item) => sum + item.creatives_count, 0)
       const totalB = b[1].reduce((sum, item) => sum + item.creatives_count, 0)
@@ -309,9 +320,7 @@ export function FunnelSummaryTab() {
     setStartYear("")
     setEndMonth("")
     setEndYear("")
-    setSelectedBrands([])
-    setSelectedTypes([])
-    setDomainSearch("")
+    setBrandSearch("")
     setShowLastMonth(false)
   }
 
@@ -348,9 +357,9 @@ export function FunnelSummaryTab() {
     URL.revokeObjectURL(url)
   }
 
-  const toggleBrand = (brand: string) => {
-    setSelectedBrands((prev) =>
-      prev.includes(brand) ? prev.filter((b) => b !== brand) : [...prev, brand]
+  const toggleNiche = (niche: FunnelType) => {
+    setSelectedNiches((prev) =>
+      prev.includes(niche) ? prev.filter((n) => n !== niche) : [...prev, niche]
     )
   }
 
@@ -360,19 +369,6 @@ export function FunnelSummaryTab() {
     )
   }
 
-  const getFunnelTypeBadge = (type: string | null) => {
-    const funnelType = (type || "landing_page") as FunnelType
-    const config = FUNNEL_TYPE_CONFIG[funnelType]
-    return (
-      <Badge
-        style={{ backgroundColor: config.color }}
-        className="text-white text-xs gap-1"
-      >
-        {config.icon}
-        {config.label}
-      </Badge>
-    )
-  }
 
   if (isLoading) {
     return (
@@ -395,32 +391,38 @@ export function FunnelSummaryTab() {
       {/* What is Funnel Summary? - Info Card */}
       
 
-      {/* Stats Cards by Type */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        {Object.entries(FUNNEL_TYPE_CONFIG).map(([type, config]) => {
-          const stats = statsByType[type as FunnelType]
-          return (
-            <Card
-              key={type}
-              className={`overflow-hidden bg-card border-border/60 cursor-pointer transition-all ${
-                selectedTypes.includes(type as FunnelType) ? "ring-2 ring-primary" : ""
-              }`}
-              style={{
-                backgroundImage: `radial-gradient(600px circle at 0% 0%, ${hexToRgba(config.color, 0.22)}, transparent 55%)`,
-              }}
-              onClick={() => toggleType(type as FunnelType)}
-            >
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 mb-1">
-                  <div style={{ color: config.color }}>{config.icon}</div>
-                  <span className="text-sm font-medium">{config.label}</span>
-                </div>
-                <div className="text-2xl font-bold">{stats.creatives.toLocaleString()}</div>
-                <div className="text-xs text-muted-foreground">{stats.count} unique URLs</div>
-              </CardContent>
-            </Card>
-          )
-        })}
+      {/* Stats Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <Card className="overflow-hidden bg-card border-border/60">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Globe className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Total Funnels</span>
+            </div>
+            <div className="text-2xl font-bold">{totalFunnels.toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">Unique destinations</div>
+          </CardContent>
+        </Card>
+        <Card className="overflow-hidden bg-card border-border/60">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Link2 className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Total Creatives</span>
+            </div>
+            <div className="text-2xl font-bold">{totalCreatives.toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">Ads pointing to funnels</div>
+          </CardContent>
+        </Card>
+        <Card className="overflow-hidden bg-card border-border/60">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Globe className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Unique Domains</span>
+            </div>
+            <div className="text-2xl font-bold">{uniqueDomains.toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">Different domains</div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Filters */}
@@ -429,16 +431,7 @@ export function FunnelSummaryTab() {
           <CardTitle className="text-lg">Filters</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-            <div className="space-y-2">
-              <Label>Search Domain</Label>
-              <Input
-                placeholder="e.g. adjust.com"
-                value={domainSearch}
-                onChange={(e) => setDomainSearch(e.target.value)}
-                className="bg-muted border-border"
-              />
-            </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div className="space-y-2">
               <Label>Start Month</Label>
               <Select value={startMonth} onValueChange={setStartMonth}>
@@ -506,79 +499,30 @@ export function FunnelSummaryTab() {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label>Filter by Brands</Label>
-            <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-2 bg-muted rounded-md">
-              {uniqueBrands.map((brand) => (
-                <Badge
-                  key={brand}
-                  variant={selectedBrands.includes(brand) ? "default" : "outline"}
-                  className="cursor-pointer hover:bg-primary/80"
-                  onClick={() => toggleBrand(brand)}
-                >
-                  {brand}
-                </Badge>
-              ))}
-            </div>
-          </div>
+          {/* Removed destination type filter since type detection is unreliable */}
         </CardContent>
       </Card>
 
-      {/* Charts Row */}
-      <div className="grid md:grid-cols-2 gap-6">
-        {/* Bar Chart */}
-        <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-sky-500/12 via-card to-card">
-          <CardHeader>
-            <CardTitle className="text-lg">Top Domains by Ad Count</CardTitle>
-            <CardDescription>Which domains receive the most ad traffic</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={topFunnelsData} layout="vertical">
-                <CartesianGrid strokeDasharray="4 8" stroke="var(--border)" opacity={0.25} />
-                <XAxis type="number" stroke="var(--muted-foreground)" fontSize={12} />
-                <YAxis dataKey="name" type="category" width={120} stroke="var(--muted-foreground)" fontSize={11} />
-                <Tooltip
-                  contentStyle={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: "10px" }}
-                />
-                <Bar dataKey="count" fill="var(--chart-2)" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Pie Chart */}
-        <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-violet-500/12 via-card to-card">
-          <CardHeader>
-            <CardTitle className="text-lg">Traffic by Funnel Type</CardTitle>
-            <CardDescription>Distribution of ad destinations</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={pieChartData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={100}
-                  paddingAngle={2}
-                  dataKey="value"
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  labelLine={false}
-                >
-                  {pieChartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: "10px" }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
+      {/* Chart */}
+      <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-sky-500/12 via-card to-card">
+        <CardHeader>
+          <CardTitle className="text-lg">Top Domains by Ad Count</CardTitle>
+          <CardDescription>Which domains receive the most ad traffic</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={topFunnelsData} layout="vertical">
+              <CartesianGrid strokeDasharray="4 8" stroke="var(--border)" opacity={0.25} />
+              <XAxis type="number" stroke="var(--muted-foreground)" fontSize={12} />
+              <YAxis dataKey="name" type="category" width={120} stroke="var(--muted-foreground)" fontSize={11} />
+              <Tooltip
+                contentStyle={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: "10px" }}
+              />
+              <Bar dataKey="count" fill="var(--chart-2)" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
 
       {/* Table */}
       <Card className="bg-card border-border">
@@ -588,10 +532,15 @@ export function FunnelSummaryTab() {
             <CardDescription>Grouped by domain - click to expand</CardDescription>
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={handleRefresh} variant="outline" size="sm" disabled={isRefreshing}>
-              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-              Refresh
-            </Button>
+            <div className="relative w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by brand name..."
+                value={brandSearch}
+                onChange={(e) => setBrandSearch(e.target.value)}
+                className="pl-9 bg-muted border-border"
+              />
+            </div>
             <Button onClick={expandAll} variant="outline" size="sm">Expand All</Button>
             <Button onClick={collapseAll} variant="outline" size="sm">Collapse All</Button>
             <Button onClick={exportCSV} variant="outline" size="sm">
@@ -607,7 +556,6 @@ export function FunnelSummaryTab() {
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="w-12"></TableHead>
                   <TableHead>Domain / Path</TableHead>
-                  <TableHead>Type</TableHead>
                   <TableHead>Brand</TableHead>
                   <TableHead className="cursor-pointer" onClick={() => handleSort("month")}>
                     <div className="flex items-center">Month<SortIcon field="month" /></div>
@@ -633,7 +581,6 @@ export function FunnelSummaryTab() {
                     const monthDisplay = uniqueMonthKeys.length === 1
                       ? monthKeyToLabel(uniqueMonthKeys[0])
                       : `${monthKeyToLabel(uniqueMonthKeys[0])} - ${monthKeyToLabel(uniqueMonthKeys[uniqueMonthKeys.length - 1])}`
-                    const primaryType = items[0]?.funnel_type || "landing_page"
                     const adsLibraryUrl = items.find(item => item.ads_library_url)?.ads_library_url
 
                     return (
@@ -646,7 +593,6 @@ export function FunnelSummaryTab() {
                             {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                           </TableCell>
                           <TableCell className="font-medium">{domain}</TableCell>
-                          <TableCell>{getFunnelTypeBadge(primaryType)}</TableCell>
                           <TableCell className="text-muted-foreground">{items.length} paths</TableCell>
                           <TableCell className="text-muted-foreground">{monthDisplay}</TableCell>
                           <TableCell className="font-semibold">{totalCreatives.toLocaleString()}</TableCell>
@@ -678,7 +624,6 @@ export function FunnelSummaryTab() {
                                 <ExternalLink className="h-3 w-3" />
                               </a>
                             </TableCell>
-                            <TableCell>{getFunnelTypeBadge(item.funnel_type)}</TableCell>
                             <TableCell>{item.brand_name}</TableCell>
                             <TableCell>{formatMonth(item.month)}</TableCell>
                             <TableCell>{item.creatives_count.toLocaleString()}</TableCell>

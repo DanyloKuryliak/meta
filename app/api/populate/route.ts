@@ -1,3 +1,5 @@
+import { getEdgeFunctionUrl } from "@/lib/supabase"
+
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}))
@@ -16,14 +18,18 @@ export async function POST(request: Request) {
       "apikey": supabaseAnonKey,
     }
 
+    // Get correct Edge Function URLs (handles local vs production)
+    const creativeFunctionUrl = getEdgeFunctionUrl("populate_creative_summary")
+    const funnelFunctionUrl = getEdgeFunctionUrl("populate_funnel_summary")
+
     // Call both populate functions
     const [creativeRes, funnelRes] = await Promise.all([
-      fetch(`${supabaseUrl}/functions/v1/populate_creative_summary`, {
+      fetch(creativeFunctionUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({ brand_id }),
       }),
-      fetch(`${supabaseUrl}/functions/v1/populate_funnel_summary`, {
+      fetch(funnelFunctionUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({ brand_id }),
