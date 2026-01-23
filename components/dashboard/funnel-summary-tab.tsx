@@ -812,9 +812,8 @@ export function FunnelSummaryTab() {
                         type={isLastMonth ? "linear" : "monotone"}
                         dataKey={domain.name}
                         stroke={domain.color}
-                        strokeWidth={isLastMonth ? 0 : (index === 0 ? 3.5 : 2)} // Hide line when last month (show only dots)
-                        strokeOpacity={index === 0 ? 1 : 0.7} // Dim others slightly
-                        dot={{ r: index === 0 ? 6 : 4, fill: domain.color }}
+                        strokeWidth={isLastMonth ? 0 : 2} // Hide line when last month (show only dots)
+                        dot={{ r: 4, fill: domain.color }}
                         activeDot={{ r: 8 }}
                         name={domain.name}
                         connectNulls={false}
