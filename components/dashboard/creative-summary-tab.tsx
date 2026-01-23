@@ -125,7 +125,7 @@ function getTrendFromRecentPrevious(opts: {
 function getTrendFromConsecutiveMonths(opts: {
   monthlyCounts: Array<{ month: string; count: number }>
   sortedMonths: string[]
-}): { trend: Trend; pctLabel: string } {
+}): { trend: Trend; pctLabel: string; growthPercent: number } {
   const { monthlyCounts, sortedMonths } = opts
 
   // Create a map for quick lookup - ensure we have counts for ALL months in the sorted list
@@ -141,55 +141,51 @@ function getTrendFromConsecutiveMonths(opts: {
     }
   })
 
-  // Calculate growth rates between consecutive months (1&2, 2&3, 3&4, etc.)
-  const growthRates: number[] = []
+  // Use last 2-3 months for trend calculation (more stable, less fragile)
+  const monthsToCompare = Math.min(3, sortedMonths.length)
+  const recentMonths = sortedMonths.slice(-monthsToCompare)
   
-  for (let i = 0; i < sortedMonths.length - 1; i++) {
-    const currentMonth = sortedMonths[i]
-    const nextMonth = sortedMonths[i + 1]
-    const currentCount = monthToCount.get(currentMonth) || 0
-    const nextCount = monthToCount.get(nextMonth) || 0
-
-    // Skip if both are zero (no meaningful comparison)
-    if (currentCount === 0 && nextCount === 0) continue
-    
-    // If current is 0 and next has value, it's new activity (100% growth)
-    if (currentCount === 0 && nextCount > 0) {
-      growthRates.push(100)
-      continue
-    }
-    
-    // If current has value and next is 0, it's -100% (complete decline)
-    if (currentCount > 0 && nextCount === 0) {
-      growthRates.push(-100)
-      continue
-    }
-    
-    // Calculate percentage change: ((next - current) / current) * 100
-    const growthRate = ((nextCount - currentCount) / currentCount) * 100
-    growthRates.push(growthRate)
-  }
-
-  // If no valid comparisons, mark as inactive
-  if (growthRates.length === 0) {
+  if (recentMonths.length < 2) {
     const lastMonth = sortedMonths[sortedMonths.length - 1]
     const lastCount = monthToCount.get(lastMonth) || 0
     if (lastCount === 0) {
-      return { trend: "inactive", pctLabel: "—" }
+      return { trend: "inactive", pctLabel: "—", growthPercent: 0 }
     }
-    // If there's data but no comparisons (only 1 month), show as new
-    return { trend: "up", pctLabel: "New" }
+    return { trend: "up", pctLabel: "New", growthPercent: Infinity }
   }
 
-  // Calculate average growth rate
-  const avgGrowthRate = growthRates.reduce((sum, rate) => sum + rate, 0) / growthRates.length
-  const clampedAvg = clampPercent(avgGrowthRate)
+  // Compare last month vs previous month(s) - use weighted average of last 2 comparisons
+  const lastMonth = recentMonths[recentMonths.length - 1]
+  const lastCount = monthToCount.get(lastMonth) || 0
   
-  const pctLabel = `${clampedAvg > 0 ? "+" : ""}${Math.round(clampedAvg)}%`
+  if (lastCount === 0) {
+    return { trend: "inactive", pctLabel: "—", growthPercent: 0 }
+  }
 
-  // Determine trend based on average
-  if (clampedAvg >= 0) return { trend: "up", pctLabel }
-  return { trend: "down", pctLabel }
+  // Calculate growth from second-to-last month
+  const secondLastMonth = recentMonths[recentMonths.length - 2]
+  const secondLastCount = monthToCount.get(secondLastMonth) || 0
+
+  let growthPercent: number
+  let pctLabel: string
+
+  if (secondLastCount === 0) {
+    // New activity
+    growthPercent = Infinity
+    pctLabel = "New"
+    return { trend: "up", pctLabel, growthPercent }
+  }
+
+  // Calculate percentage change: ((last - secondLast) / secondLast) * 100
+  growthPercent = ((lastCount - secondLastCount) / secondLastCount) * 100
+  const clampedGrowth = clampPercent(growthPercent)
+  pctLabel = `${clampedGrowth > 0 ? "+" : ""}${Math.round(clampedGrowth)}%`
+
+  // Determine trend based on growth
+  if (clampedGrowth >= 0) {
+    return { trend: "up", pctLabel, growthPercent: clampedGrowth }
+  }
+  return { trend: "down", pctLabel, growthPercent: clampedGrowth }
 }
 
 function getTrendBadge(trend: Trend) {
@@ -235,6 +231,7 @@ type BrandData = {
   recentMonth: string
   previousMonth: string
   percentChangeLabel: string
+  growthPercent: number // Numeric growth % (Infinity for "New", 0 for inactive)
   lastActiveMonth: string
   monthlyData: { month: string; count: number }[]
   lastSixMonths: { month: string; count: number; label: string }[]
@@ -293,7 +290,7 @@ export function CreativeSummaryTab() {
   const [sortField, setSortField] = useState<SortField>("total")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
   const [topBrandsCount, setTopBrandsCount] = useState<5 | 10>(5)
-  const [dateFilter, setDateFilter] = useState<"3months" | "6months" | "12months">("12months")
+  const [dateFilter, setDateFilter] = useState<"3months" | "6months" | "12months" | "lastmonth">("12months")
 
 
   const globalMonths = useMemo(() => {
@@ -386,6 +383,9 @@ export function CreativeSummaryTab() {
       case "12months":
         monthsToInclude = 12
         break
+      case "lastmonth":
+        monthsToInclude = 3 // Show 3 months visual, but only last month has data
+        break
       default:
         monthsToInclude = 12
     }
@@ -426,10 +426,15 @@ export function CreativeSummaryTab() {
     // Apply date filter and recalculate metrics (month-based)
     const dateRange = getDateFilterRange
     const monthsSet = new Set(dateRange.months)
+    const isLastMonthFilter = dateFilter === "lastmonth"
+    const lastMonthOnly = isLastMonthFilter ? dateRange.end : null
     
     result = result.map(brand => {
-      // Filter monthly data to only include months in the filter range
-      const filteredMonthlyData = brand.monthlyData.filter(m => monthsSet.has(m.month))
+      // Filter monthly data - for "lastmonth", only include the last month's data
+      let filteredMonthlyData = brand.monthlyData.filter(m => monthsSet.has(m.month))
+      if (isLastMonthFilter && lastMonthOnly) {
+        filteredMonthlyData = brand.monthlyData.filter(m => m.month === lastMonthOnly)
+      }
       const filteredTotal = filteredMonthlyData.reduce((sum, m) => sum + m.count, 0)
       
       // Sort filtered months to ensure correct order
@@ -467,7 +472,16 @@ export function CreativeSummaryTab() {
       const peakMonth = peakMonthData.count > 0 ? formatMonthShort(peakMonthData.month) : "N/A"
       
       // Build filtered last N months for display (based on filter)
+      // For "lastmonth", show 3 months but only last month has data
       const filteredDisplayMonths = dateRange.months.map((m) => {
+        if (isLastMonthFilter && m !== lastMonthOnly) {
+          // First two months show zero
+          return {
+            month: m,
+            count: 0,
+            label: formatMonthShort(m),
+          }
+        }
         const monthData = filteredMonthlyData.find(d => d.month === m)
         return {
           month: m,
@@ -486,6 +500,7 @@ export function CreativeSummaryTab() {
         previousMonth,
         trend: trendEval.trend,
         percentChangeLabel: trendEval.pctLabel,
+        growthPercent: trendEval.growthPercent, // Store numeric growth % for sorting
         avgPerMonth: Math.round(avgPerMonth),
         peakMonth,
         activeMonths,
@@ -494,7 +509,7 @@ export function CreativeSummaryTab() {
       }
     }).filter(b => b.total > 0) // Only show brands with data in range
 
-    // Sort - ensure proper comparison
+    // Sort - prioritize actionability: Trend > Recent Activity > Growth %
     result.sort((a, b) => {
       let cmp = 0
       switch (sortField) {
@@ -508,28 +523,33 @@ export function CreativeSummaryTab() {
           cmp = a.recentCount - b.recentCount
           break
         case "trend":
+          // Primary: trend (up > down > inactive)
           const trendOrder = { up: 2, down: 1, inactive: 0 }
           cmp = trendOrder[a.trend] - trendOrder[b.trend]
-          // If same trend, sort by recent count
+          // Secondary: recent activity (if same trend)
           if (cmp === 0) {
             cmp = a.recentCount - b.recentCount
+          }
+          // Tertiary: growth % (if same trend and recent activity)
+          if (cmp === 0) {
+            const aGrowth = a.growthPercent === Infinity ? 1000 : (a.growthPercent || 0)
+            const bGrowth = b.growthPercent === Infinity ? 1000 : (b.growthPercent || 0)
+            cmp = aGrowth - bGrowth
           }
           break
         case "avgPerMonth":
           cmp = (a.avgPerMonth || 0) - (b.avgPerMonth || 0)
           break
-        case "peakMonth":
-          // Sort by peak month date (more recent = higher)
-          cmp = a.peakMonth?.localeCompare(b.peakMonth || "") || 0
-          break
         case "percentChange":
-          // Extract numeric value from percentChangeLabel (e.g., "+18%" -> 18, "-5%" -> -5)
-          const getPercentValue = (label: string): number => {
-            if (label === "—" || label === "New") return 0
-            const match = label.match(/([+-]?\d+)/)
-            return match ? parseInt(match[1]) : 0
+          // Use numeric growthPercent instead of extracting from string
+          // Treat "New" (Infinity) as highest value, inactive (0) as lowest
+          const aGrowth = a.growthPercent === Infinity ? 1000 : (a.growthPercent || 0)
+          const bGrowth = b.growthPercent === Infinity ? 1000 : (b.growthPercent || 0)
+          cmp = aGrowth - bGrowth
+          // If same growth %, sort by recent activity
+          if (cmp === 0) {
+            cmp = a.recentCount - b.recentCount
           }
-          cmp = getPercentValue(a.percentChangeLabel) - getPercentValue(b.percentChangeLabel)
           break
         default:
           cmp = 0
@@ -563,7 +583,12 @@ export function CreativeSummaryTab() {
     
     // Get months from the filtered range
     const dateRange = getDateFilterRange
-    const sortedMonths = [...dateRange.months].sort()
+    const isLastMonthFilter = dateFilter === "lastmonth"
+    
+    // For "lastmonth", show only the last month (single data point)
+    const sortedMonths = isLastMonthFilter 
+      ? [dateRange.end] // Only last month
+      : [...dateRange.months].sort()
     
     // Generate colors for each brand
     const colors = [
@@ -580,7 +605,7 @@ export function CreativeSummaryTab() {
     ]
     
     // Create data structure for line chart using filtered months
-    const lineChartData = sortedMonths.map(month => {
+    const lineChartData = sortedMonths.map((month) => {
       const dataPoint: Record<string, any> = { month, monthLabel: formatMonthShort(month) }
       topBrands.forEach((brand) => {
         const monthData = brand.lastTwelveMonths.find(m => m.month === month)
@@ -597,7 +622,7 @@ export function CreativeSummaryTab() {
         total: brand.total,
       })),
     }
-  }, [filteredBrands, topBrandsCount, getDateFilterRange])
+  }, [filteredBrands, topBrandsCount, getDateFilterRange, dateFilter])
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -780,18 +805,22 @@ export function CreativeSummaryTab() {
                       padding: "8px 12px"
                     }}
                   />
-                  {chartData.brands.map((brand, index) => (
-                    <Line
-                      key={brand.name}
-                      type="monotone"
-                      dataKey={brand.name}
-                      stroke={brand.color}
-                      strokeWidth={2.5}
-                      dot={{ r: 4, fill: brand.color }}
-                      activeDot={{ r: 6 }}
-                      name={brand.name}
-                    />
-                  ))}
+                  {chartData.brands.map((brand, index) => {
+                    const isLastMonth = dateFilter === "lastmonth"
+                    return (
+                      <Line
+                        key={brand.name}
+                        type={isLastMonth ? "linear" : "monotone"}
+                        dataKey={brand.name}
+                        stroke={brand.color}
+                        strokeWidth={isLastMonth ? 0 : 2.5} // Hide line when last month (show only dots)
+                        dot={{ r: isLastMonth ? 6 : 4, fill: brand.color }}
+                        activeDot={{ r: 8 }}
+                        name={brand.name}
+                        connectNulls={false}
+                      />
+                    )
+                  })}
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -830,6 +859,7 @@ export function CreativeSummaryTab() {
               <SelectValue placeholder="Time Period" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="lastmonth">Last Month</SelectItem>
               <SelectItem value="3months">Last 3 Months</SelectItem>
               <SelectItem value="6months">Last 6 Months</SelectItem>
               <SelectItem value="12months">Last 12 Months</SelectItem>
@@ -848,12 +878,10 @@ export function CreativeSummaryTab() {
               <SelectValue placeholder="Sort by" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="total">Total Volume</SelectItem>
-              <SelectItem value="recent">Recent Activity</SelectItem>
-              <SelectItem value="percentChange">Growth %</SelectItem>
-              <SelectItem value="trend">Trend</SelectItem>
-              <SelectItem value="avgPerMonth">Avg/Month</SelectItem>
-              <SelectItem value="brand_name">Brand Name</SelectItem>
+              <SelectItem value="total">Volume</SelectItem>
+              {dateFilter !== "lastmonth" && (
+                <SelectItem value="percentChange">Growth %</SelectItem>
+              )}
             </SelectContent>
           </Select>
           <Button
@@ -968,10 +996,10 @@ export function CreativeSummaryTab() {
                   <div className="flex items-center justify-between pt-2 border-t">
                     <div>
                       <p className="text-2xl font-bold">{brand.total}</p>
-                      <p className="text-xs text-muted-foreground">Total Creatives</p>
+                      <p className="text-xs text-muted-foreground">Total Volume</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-lg font-semibold">{brand.recentCount}</p>
+                      <p className="text-2xl font-bold">{brand.recentCount}</p>
                       <p className="text-xs text-muted-foreground">Latest Month</p>
                     </div>
                   </div>

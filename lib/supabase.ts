@@ -16,7 +16,7 @@ export function getSupabaseClient() {
     supabase = createBrowserClient(
       url,
       anonKey
-    )
+    ) 
   }
   return supabase
 }

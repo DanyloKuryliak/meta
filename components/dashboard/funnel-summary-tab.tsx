@@ -44,6 +44,8 @@ import {
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -78,6 +80,35 @@ function monthKeyToLabel(monthKey: string): string {
   // monthKey: "YYYY-MM"
   if (!monthKey) return ""
   return formatMonthShort(`${monthKey}-01`)
+}
+
+function monthStartUTC(d: Date): string {
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0")
+  return `${y}-${m}-01`
+}
+
+function parseMonthStart(dateStr: string): Date | null {
+  // dateStr is "YYYY-MM-01"
+  const [y, m] = (dateStr || "").split("-")
+  const year = Number.parseInt(y || "", 10)
+  const month = Number.parseInt(m || "", 10)
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null
+  return new Date(Date.UTC(year, month - 1, 1))
+}
+
+function addMonthsUTC(date: Date, deltaMonths: number): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + deltaMonths, 1))
+}
+
+function buildLastNMonths(endMonthStart: string, n: number): string[] {
+  const end = parseMonthStart(endMonthStart)
+  if (!end || n <= 0) return []
+  const months: string[] = []
+  for (let i = n - 1; i >= 0; i--) {
+    months.push(monthStartUTC(addMonthsUTC(end, -i)))
+  }
+  return months
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -170,44 +201,12 @@ export function FunnelSummaryTab() {
   const [selectedTypes, setSelectedTypes] = useState<FunnelType[]>([])
   const [selectedNiches, setSelectedNiches] = useState<FunnelType[]>([])
   const [brandSearch, setBrandSearch] = useState("")
-  const [startMonth, setStartMonth] = useState<string>("")
-  const [startYear, setStartYear] = useState<string>("")
-  const [endMonth, setEndMonth] = useState<string>("")
-  const [endYear, setEndYear] = useState<string>("")
-  const [showLastMonth, setShowLastMonth] = useState(false)
+  const [dateRangeFilter, setDateRangeFilter] = useState<"3months" | "6months" | "12months" | "lastmonth">("12months")
+  const [trendFilter, setTrendFilter] = useState<"all" | "up" | "down">("all")
   const [sortField, setSortField] = useState<SortField>("creatives_count")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())
-
-  const months = [
-    { value: "01", label: "January" },
-    { value: "02", label: "February" },
-    { value: "03", label: "March" },
-    { value: "04", label: "April" },
-    { value: "05", label: "May" },
-    { value: "06", label: "June" },
-    { value: "07", label: "July" },
-    { value: "08", label: "August" },
-    { value: "09", label: "September" },
-    { value: "10", label: "October" },
-    { value: "11", label: "November" },
-    { value: "12", label: "December" },
-  ]
-
-
-  const availableYears = useMemo(() => {
-    if (!data) {
-      // Dynamically generate years based on current year
-      const currentYear = new Date().getFullYear()
-      const years: string[] = []
-      for (let i = currentYear - 2; i <= currentYear + 1; i++) {
-        years.push(String(i))
-      }
-      return years
-    }
-    const years = new Set(data.map((d) => d.month.substring(0, 4)))
-    return Array.from(years).sort()
-  }, [data])
+  const [topDomainsCount, setTopDomainsCount] = useState<5 | 10>(5)
 
   const uniqueBrands = useMemo(() => {
     if (!data) return []
@@ -219,17 +218,10 @@ export function FunnelSummaryTab() {
 
   const formatMonth = (month: string) => formatMonthShort(month)
 
-  const isWithinLastMonth = (month: string) => {
-    const lastMonth = new Date()
-    lastMonth.setDate(lastMonth.getDate() - 30)
-    return new Date(month) >= lastMonth
-  }
-
+  // First filter: brand search
   const filteredData = useMemo(() => {
     if (!data) return []
 
-    const startKey = startYear && startMonth ? `${startYear}-${startMonth}` : null
-    const endKey = endYear && endMonth ? `${endYear}-${endMonth}` : null
     const brandSearchLower = brandSearch.toLowerCase().trim()
 
     return data.filter((item) => {
@@ -238,27 +230,260 @@ export function FunnelSummaryTab() {
         return false
       }
       
-      // Date range filter - compare month strings (YYYY-MM format)
-      const itemKey = monthKeyFromDateStr(item.month)
-      if (startKey && itemKey < startKey) return false
-      if (endKey && itemKey > endKey) return false
-      
-      // Last month filter
-      if (showLastMonth && !isWithinLastMonth(item.month)) return false
-      
       return true
     })
-  }, [data, brandSearch, startMonth, startYear, endMonth, endYear, showLastMonth])
+  }, [data, brandSearch])
 
-  // Removed type-based stats since type detection is unreliable
-  // Calculate simple stats instead
-  const totalFunnels = filteredData.length
-  const totalCreatives = filteredData.reduce((sum, item) => sum + item.creatives_count, 0)
-  const uniqueDomains = new Set(filteredData.map(item => item.funnel_domain)).size
+  // Get global months for date filtering
+  const globalMonths = useMemo(() => {
+    const monthsInData = [...new Set((data || []).map((d) => d.month))].sort()
+    const endMonth = monthsInData.at(-1) || monthStartUTC(new Date())
+    const lastTwelve = buildLastNMonths(endMonth, 12)
+    return { endMonth, monthsInData, lastTwelve }
+  }, [data])
+
+  // Get date filter range
+  const getDateFilterRange = useMemo(() => {
+    const endMonth = globalMonths.endMonth
+    let monthsToInclude = 0
+    
+    switch (dateRangeFilter) {
+      case "3months":
+        monthsToInclude = 3
+        break
+      case "6months":
+        monthsToInclude = 6
+        break
+      case "12months":
+        monthsToInclude = 12
+        break
+      case "lastmonth":
+        monthsToInclude = 3 // Show 3 months visual, but only last month has data
+        break
+      default:
+        monthsToInclude = 12
+    }
+    
+    const filteredMonths = buildLastNMonths(endMonth, monthsToInclude)
+    return { 
+      start: filteredMonths[0], 
+      end: filteredMonths[filteredMonths.length - 1], 
+      months: filteredMonths
+    }
+  }, [dateRangeFilter, globalMonths.endMonth])
+
+  // Filter data by date range first (before trend calculation)
+  const dateFilteredDataForTrends = useMemo(() => {
+    if (!filteredData) return []
+    const dateRange = getDateFilterRange
+    const monthsSet = new Set(dateRange.months)
+    return filteredData.filter(item => monthsSet.has(item.month))
+  }, [filteredData, getDateFilterRange])
+
+  // Calculate domain trends and growth % based on selected time period (like creatives)
+  const domainTrends = useMemo(() => {
+    const dateRange = getDateFilterRange
+    const sortedMonths = [...dateRange.months].sort()
+    
+    // Aggregate data by domain and month - sum creatives_count per domain per month
+    const domainMonthMap: Record<string, Record<string, number>> = {}
+    
+    dateFilteredDataForTrends.forEach(item => {
+      if (!domainMonthMap[item.funnel_domain]) {
+        domainMonthMap[item.funnel_domain] = {}
+      }
+      const monthKey = item.month
+      domainMonthMap[item.funnel_domain][monthKey] = 
+        (domainMonthMap[item.funnel_domain][monthKey] || 0) + item.creatives_count
+    })
+    
+    const trends: Record<string, "up" | "down" | "inactive"> = {}
+    const growthPercents: Record<string, number> = {}
+    const growthLabels: Record<string, string> = {}
+    
+    Object.entries(domainMonthMap).forEach(([domain, months]) => {
+      // Convert to array format for trend calculation
+      const monthlyCounts = sortedMonths.map(month => ({
+        month,
+        count: months[month] || 0
+      }))
+      
+      // For last month filter, don't calculate percentages
+      if (dateRangeFilter === "lastmonth") {
+        const lastMonth = sortedMonths[sortedMonths.length - 1]
+        const lastCount = months[lastMonth] || 0
+        if (lastCount === 0) {
+          trends[domain] = "inactive"
+          growthPercents[domain] = 0
+          growthLabels[domain] = "—"
+        } else {
+          trends[domain] = "up"
+          growthPercents[domain] = 0
+          growthLabels[domain] = "—"
+        }
+        return
+      }
+      
+      // For 3+ months: calculate % change for each consecutive pair and average them
+      // 3 months: compare 1-2, 2-3 and average
+      // 6 months: compare 1-2, 2-3, 3-4, 4-5, 5-6 and average
+      if (sortedMonths.length < 2) {
+        const lastMonth = sortedMonths[sortedMonths.length - 1]
+        const lastCount = months[lastMonth] || 0
+        if (lastCount === 0) {
+          trends[domain] = "inactive"
+          growthPercents[domain] = 0
+          growthLabels[domain] = "—"
+        } else {
+          trends[domain] = "up"
+          growthPercents[domain] = Infinity
+          growthLabels[domain] = "New"
+        }
+        return
+      }
+      
+      // Calculate growth % for each consecutive month pair
+      const growthRates: number[] = []
+      for (let i = 0; i < sortedMonths.length - 1; i++) {
+        const currentMonth = sortedMonths[i]
+        const nextMonth = sortedMonths[i + 1]
+        const currentCount = months[currentMonth] || 0
+        const nextCount = months[nextMonth] || 0
+        
+        if (currentCount === 0 && nextCount > 0) {
+          // New activity
+          growthRates.push(Infinity)
+        } else if (currentCount > 0 && nextCount === 0) {
+          // Stopped
+          growthRates.push(-100)
+        } else if (currentCount > 0) {
+          // Normal calculation
+          const growth = ((nextCount - currentCount) / currentCount) * 100
+          growthRates.push(growth)
+        }
+      }
+      
+      if (growthRates.length === 0) {
+        trends[domain] = "inactive"
+        growthPercents[domain] = 0
+        growthLabels[domain] = "—"
+        return
+      }
+      
+      // Average the growth rates (handle Infinity separately)
+      const hasInfinity = growthRates.some(r => r === Infinity)
+      const finiteRates = growthRates.filter(r => r !== Infinity)
+      
+      let avgGrowth: number
+      if (hasInfinity && finiteRates.length === 0) {
+        avgGrowth = Infinity
+        growthLabels[domain] = "New"
+        trends[domain] = "up"
+        growthPercents[domain] = Infinity
+        return
+      } else if (finiteRates.length > 0) {
+        avgGrowth = finiteRates.reduce((sum, r) => sum + r, 0) / finiteRates.length
+      } else {
+        avgGrowth = -100
+      }
+      
+      const clampedGrowth = Math.max(-999, Math.min(999, avgGrowth))
+      growthPercents[domain] = clampedGrowth
+      growthLabels[domain] = `${clampedGrowth > 0 ? "+" : ""}${Math.round(clampedGrowth)}%`
+      trends[domain] = clampedGrowth >= 0 ? "up" : "down"
+    })
+    
+    return { trends, growthPercents, growthLabels }
+  }, [dateFilteredDataForTrends, getDateFilterRange, dateRangeFilter])
+
+  // Filter data by date range and other filters
+  const dateFilteredData = useMemo(() => {
+    if (!filteredData) return []
+    
+    const dateRange = getDateFilterRange
+    const isLastMonthFilter = dateRangeFilter === "lastmonth"
+    const lastMonthOnly = isLastMonthFilter ? dateRange.end : null
+    
+    // Apply date filter - for "lastmonth", only include the last month's data
+    let result: typeof filteredData
+    if (isLastMonthFilter && lastMonthOnly) {
+      result = filteredData.filter(item => item.month === lastMonthOnly)
+    } else {
+      const monthsSet = new Set(dateRange.months)
+      result = filteredData.filter(item => monthsSet.has(item.month))
+    }
+    
+    // Apply trend filter (excluding inactive) - but not when last month is selected
+    if (trendFilter !== "all" && !isLastMonthFilter) {
+      result = result.filter(item => domainTrends.trends[item.funnel_domain] === trendFilter)
+    }
+    
+    return result
+  }, [filteredData, getDateFilterRange, dateRangeFilter, trendFilter, domainTrends])
+
+  // Calculate stats with trend indicators (vs previous period)
+  const stats = useMemo(() => {
+    const dateRange = getDateFilterRange
+    const currentMonths = new Set(dateRange.months)
+    
+    // Get previous period (same length, before current period)
+    const sortedMonths = [...dateRange.months].sort()
+    if (sortedMonths.length === 0) {
+      return { totalFunnels: 0, totalCreatives: 0, uniqueDomains: 0, trends: {} }
+    }
+    
+    const periodLength = sortedMonths.length
+    const firstMonth = parseMonthStart(sortedMonths[0])
+    if (!firstMonth) {
+      return { totalFunnels: 0, totalCreatives: 0, uniqueDomains: 0, trends: {} }
+    }
+    
+    // Calculate previous period months
+    const previousPeriodStart = addMonthsUTC(firstMonth, -periodLength)
+    const previousMonths: string[] = []
+    for (let i = 0; i < periodLength; i++) {
+      previousMonths.push(monthStartUTC(addMonthsUTC(previousPeriodStart, i)))
+    }
+    const previousMonthsSet = new Set(previousMonths)
+    
+    // Current period stats
+    const currentData = filteredData.filter(item => currentMonths.has(item.month))
+    const totalFunnels = currentData.length
+    const totalCreatives = currentData.reduce((sum, item) => sum + item.creatives_count, 0)
+    const uniqueDomains = new Set(currentData.map(item => item.funnel_domain)).size
+    
+    // Previous period stats
+    const previousData = filteredData.filter(item => previousMonthsSet.has(item.month))
+    const prevTotalFunnels = previousData.length
+    const prevTotalCreatives = previousData.reduce((sum, item) => sum + item.creatives_count, 0)
+    const prevUniqueDomains = new Set(previousData.map(item => item.funnel_domain)).size
+    
+    // Calculate trends
+    const calculateTrend = (current: number, previous: number) => {
+      if (previous === 0) return current > 0 ? { direction: "up" as const, percent: 100, label: "New" } : { direction: "neutral" as const, percent: 0, label: "—" }
+      const percent = ((current - previous) / previous) * 100
+      return {
+        direction: percent > 0 ? "up" as const : percent < 0 ? "down" as const : "neutral" as const,
+        percent: Math.abs(percent),
+        label: `${percent > 0 ? "+" : ""}${Math.round(percent)}%`
+      }
+    }
+    
+    return {
+      totalFunnels,
+      totalCreatives,
+      uniqueDomains,
+      trends: {
+        funnels: calculateTrend(totalFunnels, prevTotalFunnels),
+        creatives: calculateTrend(totalCreatives, prevTotalCreatives),
+        domains: calculateTrend(uniqueDomains, prevUniqueDomains),
+      }
+    }
+  }, [dateFilteredData, filteredData, getDateFilterRange])
 
   const groupedByDomain = useMemo(() => {
     const groups: Record<string, BrandFunnelSummary[]> = {}
-    filteredData.forEach((item) => {
+    dateFilteredData.forEach((item) => {
       if (!groups[item.funnel_domain]) groups[item.funnel_domain] = []
       groups[item.funnel_domain].push(item)
     })
@@ -283,7 +508,7 @@ export function FunnelSummaryTab() {
     })
 
     return sortedEntries
-  }, [filteredData, sortField, sortDirection])
+  }, [dateFilteredData, sortField, sortDirection])
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -316,28 +541,81 @@ export function FunnelSummaryTab() {
   const collapseAll = () => setExpandedDomains(new Set())
 
   const clearFilters = () => {
-    setStartMonth("")
-    setStartYear("")
-    setEndMonth("")
-    setEndYear("")
+    setDateRangeFilter("12months")
+    setTrendFilter("all")
     setBrandSearch("")
-    setShowLastMonth(false)
   }
 
-  const topFunnelsData = useMemo(() => {
-    const totals: Record<string, number> = {}
-    filteredData.forEach((item) => {
-      totals[item.funnel_domain] = (totals[item.funnel_domain] || 0) + item.creatives_count
+  // Chart data - Top N domains by total volume with monthly data for line chart
+  const chartData = useMemo(() => {
+    // Aggregate by domain and month
+    const domainMonthMap: Record<string, Record<string, number>> = {}
+    
+    dateFilteredData.forEach((item) => {
+      if (!domainMonthMap[item.funnel_domain]) {
+        domainMonthMap[item.funnel_domain] = {}
+      }
+      const monthKey = item.month
+      domainMonthMap[item.funnel_domain][monthKey] = 
+        (domainMonthMap[item.funnel_domain][monthKey] || 0) + item.creatives_count
     })
-    return Object.entries(totals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name, count]) => ({ name, count }))
-  }, [filteredData])
+
+    // Calculate totals per domain
+    const domainTotals = Object.entries(domainMonthMap).map(([domain, months]) => ({
+      domain,
+      total: Object.values(months).reduce((sum, count) => sum + count, 0),
+      months
+    }))
+
+    // Get top N domains
+    const sorted = domainTotals.sort((a, b) => b.total - a.total)
+    const topDomains = sorted.slice(0, topDomainsCount)
+    
+    // Get months from the filtered range
+    const dateRange = getDateFilterRange
+    const isLastMonthFilter = dateRangeFilter === "lastmonth"
+    
+    // For "lastmonth", show only the last month (single data point)
+    const sortedMonths = isLastMonthFilter 
+      ? [dateRange.end] // Only last month
+      : [...dateRange.months].sort()
+    
+    // Generate colors for each domain
+    const colors = [
+      "#3b82f6", // blue
+      "#10b981", // green
+      "#f59e0b", // amber
+      "#ef4444", // red
+      "#8b5cf6", // violet
+      "#ec4899", // pink
+      "#06b6d4", // cyan
+      "#84cc16", // lime
+      "#f97316", // orange
+      "#6366f1", // indigo
+    ]
+    
+    // Create data structure for line chart using filtered months
+    const lineChartData = sortedMonths.map(month => {
+      const dataPoint: Record<string, any> = { month, monthLabel: formatMonthShort(month) }
+      topDomains.forEach((domainData) => {
+        dataPoint[domainData.domain] = domainData.months[month] || 0
+      })
+      return dataPoint
+    })
+    
+    return {
+      data: lineChartData,
+      domains: topDomains.map((domainData, index) => ({
+        name: domainData.domain,
+        color: colors[index % colors.length],
+        total: domainData.total,
+      })),
+    }
+  }, [dateFilteredData, topDomainsCount, getDateFilterRange, dateRangeFilter])
 
   const exportCSV = () => {
     const headers = ["Brand Name", "Domain", "Path", "Full URL", "Type", "Month", "Creatives Count", "Ads Library URL"]
-    const rows = filteredData.map((item) => [
+    const rows = dateFilteredData.map((item) => [
       item.brand_name,
       item.funnel_domain,
       item.funnel_path || "",
@@ -391,7 +669,7 @@ export function FunnelSummaryTab() {
       {/* What is Funnel Summary? - Info Card */}
       
 
-      {/* Stats Cards */}
+      {/* Stats Cards with Trend Indicators */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <Card className="overflow-hidden bg-card border-border/60">
           <CardContent className="pt-4">
@@ -399,7 +677,7 @@ export function FunnelSummaryTab() {
               <Globe className="h-4 w-4 text-primary" />
               <span className="text-sm font-medium">Total Funnels</span>
             </div>
-            <div className="text-2xl font-bold">{totalFunnels.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{stats.totalFunnels.toLocaleString()}</div>
             <div className="text-xs text-muted-foreground">Unique destinations</div>
           </CardContent>
         </Card>
@@ -409,7 +687,7 @@ export function FunnelSummaryTab() {
               <Link2 className="h-4 w-4 text-primary" />
               <span className="text-sm font-medium">Total Creatives</span>
             </div>
-            <div className="text-2xl font-bold">{totalCreatives.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{stats.totalCreatives.toLocaleString()}</div>
             <div className="text-xs text-muted-foreground">Ads pointing to funnels</div>
           </CardContent>
         </Card>
@@ -419,110 +697,162 @@ export function FunnelSummaryTab() {
               <Globe className="h-4 w-4 text-primary" />
               <span className="text-sm font-medium">Unique Domains</span>
             </div>
-            <div className="text-2xl font-bold">{uniqueDomains.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{stats.uniqueDomains.toLocaleString()}</div>
             <div className="text-xs text-muted-foreground">Different domains</div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Filters */}
+      {/* Filters - Simplified */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-lg">Filters</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <div className="space-y-2">
-              <Label>Start Month</Label>
-              <Select value={startMonth} onValueChange={setStartMonth}>
+              <Label>Date Range</Label>
+              <Select value={dateRangeFilter} onValueChange={(v) => setDateRangeFilter(v as typeof dateRangeFilter)}>
                 <SelectTrigger className="bg-muted border-border">
-                  <SelectValue placeholder="Month" />
+                  <SelectValue placeholder="Date Range" />
                 </SelectTrigger>
                 <SelectContent>
-                  {months.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
-                  ))}
+                  <SelectItem value="lastmonth">Last Month</SelectItem>
+                  <SelectItem value="3months">Last 3 Months</SelectItem>
+                  <SelectItem value="6months">Last 6 Months</SelectItem>
+                  <SelectItem value="12months">Last 12 Months</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>Start Year</Label>
-              <Select value={startYear} onValueChange={setStartYear}>
-                <SelectTrigger className="bg-muted border-border">
-                  <SelectValue placeholder="Year" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableYears.map((y) => (
-                    <SelectItem key={y} value={y}>{y}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>End Month</Label>
-              <Select value={endMonth} onValueChange={setEndMonth}>
-                <SelectTrigger className="bg-muted border-border">
-                  <SelectValue placeholder="Month" />
-                </SelectTrigger>
-                <SelectContent>
-                  {months.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>End Year</Label>
-              <Select value={endYear} onValueChange={setEndYear}>
-                <SelectTrigger className="bg-muted border-border">
-                  <SelectValue placeholder="Year" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableYears.map((y) => (
-                    <SelectItem key={y} value={y}>{y}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {dateRangeFilter !== "lastmonth" && (
+              <div className="space-y-2">
+                <Label>Trend</Label>
+                <Select value={trendFilter} onValueChange={(v) => setTrendFilter(v as typeof trendFilter)}>
+                  <SelectTrigger className="bg-muted border-border">
+                    <SelectValue placeholder="All Trends" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Trends</SelectItem>
+                    <SelectItem value="up">Growing</SelectItem>
+                    <SelectItem value="down">Declining</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>&nbsp;</Label>
-              <Button variant="outline" onClick={clearFilters} className="w-full bg-transparent">
+              <Button variant="outline" onClick={() => {
+                setDateRangeFilter("12months")
+                setTrendFilter("all")
+                setBrandSearch("")
+              }} className="w-full bg-transparent">
                 Clear Filters
               </Button>
             </div>
           </div>
-
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <Switch checked={showLastMonth} onCheckedChange={setShowLastMonth} />
-              <span className="text-sm text-muted-foreground">Within last month only</span>
-            </div>
-          </div>
-
-          {/* Removed destination type filter since type detection is unreliable */}
         </CardContent>
       </Card>
 
       {/* Chart */}
-      <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-sky-500/12 via-card to-card">
-        <CardHeader>
-          <CardTitle className="text-lg">Top Domains by Ad Count</CardTitle>
-          <CardDescription>Which domains receive the most ad traffic</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={topFunnelsData} layout="vertical">
-              <CartesianGrid strokeDasharray="4 8" stroke="var(--border)" opacity={0.25} />
-              <XAxis type="number" stroke="var(--muted-foreground)" fontSize={12} />
-              <YAxis dataKey="name" type="category" width={120} stroke="var(--muted-foreground)" fontSize={11} />
-              <Tooltip
-                contentStyle={{ background: "var(--background)", border: "1px solid var(--border)", borderRadius: "10px" }}
-              />
-              <Bar dataKey="count" fill="var(--chart-2)" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+      {chartData.data.length > 0 && (
+        <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-indigo-500/12 via-card to-card">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <span className="text-base leading-none">🏆</span>
+                Top {topDomainsCount} Domains by Creative Volume
+              </CardTitle>
+              <div className="flex gap-2">
+                <Button
+                  variant={topDomainsCount === 5 ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setTopDomainsCount(5)}
+                >
+                  Top 5
+                </Button>
+                <Button
+                  variant={topDomainsCount === 10 ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setTopDomainsCount(10)}
+                >
+                  Top 10
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[300px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData.data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="4 8" stroke="var(--border)" opacity={0.25} />
+                  <XAxis 
+                    dataKey="monthLabel" 
+                    tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis 
+                    tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip 
+                    contentStyle={{ 
+                      background: "var(--background)", 
+                      border: "1px solid var(--border)", 
+                      borderRadius: 10,
+                      padding: "8px 12px"
+                    }}
+                  />
+                  {chartData.domains.map((domain, index) => {
+                    const isLastMonth = dateRangeFilter === "lastmonth"
+                    return (
+                      <Line
+                        key={domain.name}
+                        type={isLastMonth ? "linear" : "monotone"}
+                        dataKey={domain.name}
+                        stroke={domain.color}
+                        strokeWidth={isLastMonth ? 0 : (index === 0 ? 3.5 : 2)} // Hide line when last month (show only dots)
+                        strokeOpacity={index === 0 ? 1 : 0.7} // Dim others slightly
+                        dot={{ r: index === 0 ? 6 : 4, fill: domain.color }}
+                        activeDot={{ r: 8 }}
+                        name={domain.name}
+                        connectNulls={false}
+                      />
+                    )
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {/* Legend with colors and growth % - single legend below chart */}
+            <div className="mt-4 flex flex-wrap gap-4 justify-center">
+              {chartData.domains.map((domain) => {
+                const growthInfo = domainTrends.growthLabels[domain.name]
+                const growthPercent = domainTrends.growthPercents[domain.name]
+                const isGrowing = domainTrends.trends[domain.name] === "up"
+                return (
+                  <div key={domain.name} className="flex items-center gap-2">
+                    <div 
+                      className="w-3 h-3 rounded-full" 
+                      style={{ backgroundColor: domain.color }}
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {domain.name.length > 25 ? domain.name.substring(0, 25) + "…" : domain.name}
+                    </span>
+                    {dateRangeFilter !== "lastmonth" && growthInfo && growthInfo !== "—" && (
+                      <span className={`text-xs font-semibold ${
+                        isGrowing ? "text-green-600" : "text-red-600"
+                      }`}>
+                        {growthInfo}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Table */}
       <Card className="bg-card border-border">
@@ -649,7 +979,7 @@ export function FunnelSummaryTab() {
             </Table>
           </div>
           <div className="mt-4 text-sm text-muted-foreground">
-            Showing {groupedByDomain.length} domains with {filteredData.length} total records
+            Showing {groupedByDomain.length} domains with {dateFilteredData.length} total records
           </div>
         </CardContent>
       </Card>
