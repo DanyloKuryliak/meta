@@ -31,6 +31,9 @@ import {
   TrendingUp,
   TrendingDown,
   Search,
+  X,
+  Plus,
+  Check,
 } from "lucide-react"
 import {
   BarChart,
@@ -141,11 +144,8 @@ function getTrendFromConsecutiveMonths(opts: {
     }
   })
 
-  // Use last 2-3 months for trend calculation (more stable, less fragile)
-  const monthsToCompare = Math.min(3, sortedMonths.length)
-  const recentMonths = sortedMonths.slice(-monthsToCompare)
-  
-  if (recentMonths.length < 2) {
+  // Need at least 2 months to calculate growth
+  if (sortedMonths.length < 2) {
     const lastMonth = sortedMonths[sortedMonths.length - 1]
     const lastCount = monthToCount.get(lastMonth) || 0
     if (lastCount === 0) {
@@ -154,32 +154,71 @@ function getTrendFromConsecutiveMonths(opts: {
     return { trend: "up", pctLabel: "New", growthPercent: Infinity }
   }
 
-  // Compare last month vs previous month(s) - use weighted average of last 2 comparisons
-  const lastMonth = recentMonths[recentMonths.length - 1]
-  const lastCount = monthToCount.get(lastMonth) || 0
-  
-  if (lastCount === 0) {
+  // Calculate means of consecutive month pairs (1&2, 2&3, 3&4, etc.)
+  // For 6 months: calculate means of (1&2), (2&3), (3&4), (4&5), (5&6)
+  // For 3 months: calculate means of (1&2), (2&3)
+  const pairMeans: number[] = []
+  for (let i = 0; i < sortedMonths.length - 1; i++) {
+    const month1 = sortedMonths[i]
+    const month2 = sortedMonths[i + 1]
+    const count1 = monthToCount.get(month1) || 0
+    const count2 = monthToCount.get(month2) || 0
+    const mean = (count1 + count2) / 2
+    pairMeans.push(mean)
+  }
+
+  // If all pair means are 0, brand is inactive
+  if (pairMeans.every(m => m === 0)) {
     return { trend: "inactive", pctLabel: "—", growthPercent: 0 }
   }
 
-  // Calculate growth from second-to-last month
-  const secondLastMonth = recentMonths[recentMonths.length - 2]
-  const secondLastCount = monthToCount.get(secondLastMonth) || 0
-
-  let growthPercent: number
-  let pctLabel: string
-
-  if (secondLastCount === 0) {
-    // New activity
-    growthPercent = Infinity
-    pctLabel = "New"
-    return { trend: "up", pctLabel, growthPercent }
+  // Calculate growth rates between consecutive pair means
+  // For 6 months with 5 pair means: calculate growth from mean(1,2) to mean(2,3), mean(2,3) to mean(3,4), etc.
+  // Then average all growth rates to get the final percentage
+  const growthRates: number[] = []
+  for (let i = 0; i < pairMeans.length - 1; i++) {
+    const currentMean = pairMeans[i]
+    const nextMean = pairMeans[i + 1]
+    
+    if (currentMean === 0 && nextMean > 0) {
+      // New activity
+      growthRates.push(Infinity)
+    } else if (currentMean > 0 && nextMean === 0) {
+      // Stopped
+      growthRates.push(-100)
+    } else if (currentMean > 0) {
+      // Normal calculation: ((nextMean - currentMean) / currentMean) * 100
+      const growth = ((nextMean - currentMean) / currentMean) * 100
+      growthRates.push(growth)
+    }
   }
 
-  // Calculate percentage change: ((last - secondLast) / secondLast) * 100
-  growthPercent = ((lastCount - secondLastCount) / secondLastCount) * 100
-  const clampedGrowth = clampPercent(growthPercent)
-  pctLabel = `${clampedGrowth > 0 ? "+" : ""}${Math.round(clampedGrowth)}%`
+  // If no valid growth rates, handle edge cases
+  if (growthRates.length === 0) {
+    const lastMonth = sortedMonths[sortedMonths.length - 1]
+    const lastCount = monthToCount.get(lastMonth) || 0
+    if (lastCount === 0) {
+      return { trend: "inactive", pctLabel: "—", growthPercent: 0 }
+    }
+    return { trend: "up", pctLabel: "New", growthPercent: Infinity }
+  }
+
+  // Average the growth rates (handle Infinity separately)
+  const hasInfinity = growthRates.some(r => r === Infinity)
+  const finiteRates = growthRates.filter(r => r !== Infinity && Number.isFinite(r))
+  
+  let avgGrowth: number
+  if (hasInfinity && finiteRates.length === 0) {
+    avgGrowth = Infinity
+    return { trend: "up", pctLabel: "New", growthPercent: Infinity }
+  } else if (finiteRates.length > 0) {
+    avgGrowth = finiteRates.reduce((sum, r) => sum + r, 0) / finiteRates.length
+  } else {
+    avgGrowth = -100
+  }
+
+  const clampedGrowth = clampPercent(avgGrowth)
+  const pctLabel = `${clampedGrowth > 0 ? "+" : ""}${Math.round(clampedGrowth)}%`
 
   // Determine trend based on growth
   if (clampedGrowth >= 0) {
@@ -289,8 +328,9 @@ export function CreativeSummaryTab() {
   const [searchQuery, setSearchQuery] = useState("")
   const [sortField, setSortField] = useState<SortField>("total")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
-  const [topBrandsCount, setTopBrandsCount] = useState<5 | 10>(5)
+  const [topBrandsCount, setTopBrandsCount] = useState<number>(5)
   const [dateFilter, setDateFilter] = useState<"3months" | "6months" | "12months" | "lastmonth">("12months")
+  const [selectedBrandIds, setSelectedBrandIds] = useState<Set<string>>(new Set())
 
 
   const globalMonths = useMemo(() => {
@@ -509,6 +549,11 @@ export function CreativeSummaryTab() {
       }
     }).filter(b => b.total > 0) // Only show brands with data in range
 
+    // When sorting by Growth %, exclude "New" brands (they don't have a percentage)
+    if (sortField === "percentChange") {
+      result = result.filter(b => b.growthPercent !== Infinity)
+    }
+
     // Sort - prioritize actionability: Trend > Recent Activity > Growth %
     result.sort((a, b) => {
       let cmp = 0
@@ -541,14 +586,17 @@ export function CreativeSummaryTab() {
           cmp = (a.avgPerMonth || 0) - (b.avgPerMonth || 0)
           break
         case "percentChange":
-          // Use numeric growthPercent instead of extracting from string
-          // Treat "New" (Infinity) as highest value, inactive (0) as lowest
-          const aGrowth = a.growthPercent === Infinity ? 1000 : (a.growthPercent || 0)
-          const bGrowth = b.growthPercent === Infinity ? 1000 : (b.growthPercent || 0)
-          cmp = aGrowth - bGrowth
+          // Sort by numeric growthPercent
+          // "New" brands (Infinity) are already filtered out before sorting
+          cmp = (a.growthPercent || 0) - (b.growthPercent || 0)
+          
           // If same growth %, sort by recent activity
           if (cmp === 0) {
             cmp = a.recentCount - b.recentCount
+          }
+          // If still same, sort by total volume
+          if (cmp === 0) {
+            cmp = a.total - b.total
           }
           break
         default:
@@ -560,7 +608,7 @@ export function CreativeSummaryTab() {
     })
 
     return result
-  }, [brandData, searchQuery, sortField, sortDirection, getDateFilterRange])
+  }, [brandData, searchQuery, sortField, sortDirection, getDateFilterRange, dateFilter])
 
   // Summary stats (based on filtered data)
   const stats = useMemo(() => {
@@ -576,10 +624,18 @@ export function CreativeSummaryTab() {
     }
   }, [filteredBrands, getDateFilterRange])
 
-  // Chart data - Top N by total volume with monthly data for line chart (uses filtered data)
+  // Chart data - Top N by total volume OR selected brands with monthly data for line chart (uses filtered data)
   const chartData = useMemo(() => {
-    const sorted = [...filteredBrands].sort((a, b) => b.total - a.total)
-    const topBrands = sorted.slice(0, topBrandsCount)
+    let brandsToShow: BrandData[] = []
+    
+    // If brands are selected for comparison, show those. Otherwise show top N
+    if (selectedBrandIds.size > 0) {
+      brandsToShow = filteredBrands.filter(brand => selectedBrandIds.has(brand.brand_id))
+    } else {
+      // Top N mode: sort by total and take top N
+      const sorted = [...filteredBrands].sort((a, b) => b.total - a.total)
+      brandsToShow = sorted.slice(0, topBrandsCount)
+    }
     
     // Get months from the filtered range
     const dateRange = getDateFilterRange
@@ -607,7 +663,7 @@ export function CreativeSummaryTab() {
     // Create data structure for line chart using filtered months
     const lineChartData = sortedMonths.map((month) => {
       const dataPoint: Record<string, any> = { month, monthLabel: formatMonthShort(month) }
-      topBrands.forEach((brand) => {
+      brandsToShow.forEach((brand) => {
         const monthData = brand.lastTwelveMonths.find(m => m.month === month)
         dataPoint[brand.brand_name] = monthData?.count || 0
       })
@@ -616,13 +672,14 @@ export function CreativeSummaryTab() {
     
     return {
       data: lineChartData,
-      brands: topBrands.map((brand, index) => ({
+      brands: brandsToShow.map((brand, index) => ({
         name: brand.brand_name,
         color: colors[index % colors.length],
         total: brand.total,
+        id: brand.brand_id,
       })),
     }
-  }, [filteredBrands, topBrandsCount, getDateFilterRange, dateFilter])
+  }, [filteredBrands, topBrandsCount, getDateFilterRange, dateFilter, selectedBrandIds])
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -732,6 +789,11 @@ export function CreativeSummaryTab() {
               Brands Tracked
             </p>
             <p className="text-2xl font-bold">{stats.totalBrands}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {dateFilter === "lastmonth" ? "Last month" : 
+               dateFilter === "3months" ? "Last 3 months" :
+               dateFilter === "6months" ? "Last 6 months" : "Last 12 months"}
+            </p>
           </CardContent>
         </Card>
         <Card className="overflow-hidden bg-gradient-to-br from-violet-500/10 via-card to-card">
@@ -741,6 +803,9 @@ export function CreativeSummaryTab() {
               Total Creatives
             </p>
             <p className="text-2xl font-bold">{stats.totalCreatives.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.totalBrands > 0 ? Math.round(stats.totalCreatives / stats.totalBrands) : 0} avg per brand
+            </p>
           </CardContent>
         </Card>
         <Card className="overflow-hidden bg-gradient-to-br from-emerald-500/10 via-card to-card">
@@ -750,35 +815,110 @@ export function CreativeSummaryTab() {
               Growing Brands
             </p>
             <p className="text-2xl font-bold text-green-600">{stats.growingBrands}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.totalBrands > 0 ? Math.round((stats.growingBrands / stats.totalBrands) * 100) : 0}% of total
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="overflow-hidden bg-gradient-to-br from-amber-500/10 via-card to-card">
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <span className="text-base leading-none">📊</span>
+              Period Range
+            </p>
+            <p className="text-sm font-bold">
+              {(() => {
+                const dateRange = getDateFilterRange
+                return `${formatMonthShort(dateRange.start)} – ${formatMonthShort(dateRange.end)}`
+              })()}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.totalMonths} months shown
+            </p>
           </CardContent>
         </Card>
       </div>
 
+      {/* Search - Moved above chart */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 sm:w-64">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search brands..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+      </div>
+
       {/* Chart */}
-      {chartData.data.length > 0 && (
+      {chartData.data.length > 0 && chartData.brands.length > 0 && (
         <Card className="overflow-hidden border-border/60 bg-gradient-to-br from-indigo-500/12 via-card to-card">
           <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base flex items-center gap-2">
-                <span className="text-base leading-none">🏆</span>
-                Top {topBrandsCount} Brands by Creative Volume
-              </CardTitle>
-              <div className="flex gap-2">
-                <Button
-                  variant={topBrandsCount === 5 ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setTopBrandsCount(5)}
-                >
-                  Top 5
-                </Button>
-                <Button
-                  variant={topBrandsCount === 10 ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setTopBrandsCount(10)}
-                >
-                  Top 10
-                </Button>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <span className="text-base leading-none">🏆</span>
+                  {selectedBrandIds.size > 0
+                    ? `${selectedBrandIds.size} Brand${selectedBrandIds.size !== 1 ? 's' : ''} Comparison`
+                    : `Top ${topBrandsCount} Brands by Creative Volume`
+                  }
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  {selectedBrandIds.size > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedBrandIds(new Set())}
+                    >
+                      Clear Selection
+                    </Button>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-muted-foreground whitespace-nowrap">Show top:</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={topBrandsCount}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value, 10)
+                        if (!isNaN(value) && value >= 1 && value <= 10) {
+                          setTopBrandsCount(value)
+                        }
+                      }}
+                      className="w-16 h-8 text-center"
+                      disabled={selectedBrandIds.size > 0}
+                    />
+                    <span className="text-xs text-muted-foreground">(1-10)</span>
+                  </div>
+                </div>
               </div>
+              {selectedBrandIds.size > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-muted-foreground">Comparing:</span>
+                  {Array.from(selectedBrandIds).map((brandId) => {
+                    const brand = filteredBrands.find(b => b.brand_id === brandId)
+                    if (!brand) return null
+                    return (
+                      <Badge key={brandId} variant="secondary" className="gap-1">
+                        {brand.brand_name}
+                        <button
+                          onClick={() => {
+                            const newSet = new Set(selectedBrandIds)
+                            newSet.delete(brandId)
+                            setSelectedBrandIds(newSet)
+                          }}
+                          className="ml-1 hover:bg-destructive/20 rounded"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </CardHeader>
           <CardContent>
@@ -845,15 +985,6 @@ export function CreativeSummaryTab() {
       {/* Controls */}
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
-          <div className="relative flex-1 sm:w-64">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search brands..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
-          </div>
           <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as typeof dateFilter)}>
             <SelectTrigger className="w-[140px]">
               <SelectValue placeholder="Time Period" />
@@ -905,7 +1036,12 @@ export function CreativeSummaryTab() {
       {(
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredBrands.map((brand) => (
-            <Card key={brand.brand_id} className="hover:border-primary/50 transition-colors">
+            <Card 
+              key={brand.brand_id} 
+              className={`hover:border-primary/50 transition-colors ${
+                selectedBrandIds.has(brand.brand_id) ? "border-primary/50 ring-2 ring-primary/20" : ""
+              }`}
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
                   <div className="flex-1 min-w-0">
@@ -975,9 +1111,17 @@ export function CreativeSummaryTab() {
                   </div>
 
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground">
-                      Period Growth
-                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">
+                        Period Growth
+                      </span>
+                      <span 
+                        className="text-muted-foreground cursor-help" 
+                        title={`Calculated from consecutive month pairs (e.g., for ${dateFilter === "6months" ? "6 months: means of (1&2), (2&3), (3&4), (4&5), (5&6)" : dateFilter === "3months" ? "3 months: means of (1&2), (2&3)" : "12 months: means of consecutive month pairs"}). Growth rates between pair means are averaged.`}
+                      >
+                        ℹ️
+                      </span>
+                    </div>
                     <span className={`font-bold text-lg ${
                       brand.trend === "up" ? "text-green-600 dark:text-green-400" :
                       brand.trend === "down" ? "text-red-600 dark:text-red-400" :
@@ -997,24 +1141,62 @@ export function CreativeSummaryTab() {
                     <div>
                       <p className="text-2xl font-bold">{brand.total}</p>
                       <p className="text-xs text-muted-foreground">Total Volume</p>
+                      {brand.avgPerMonth && brand.avgPerMonth > 0 && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          ~{brand.avgPerMonth}/month avg
+                        </p>
+                      )}
                     </div>
                     <div className="text-right">
                       <p className="text-2xl font-bold">{brand.recentCount}</p>
                       <p className="text-xs text-muted-foreground">Latest Month</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        {formatMonthShort(brand.recentMonth)}
+                      </p>
                     </div>
                   </div>
 
-                  {brand.ads_library_url && (
-                    <a
-                      href={brand.ads_library_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-2 text-sm text-primary hover:underline pt-2"
+                  <div className="flex items-center gap-2 pt-2">
+                    <Button
+                      variant={selectedBrandIds.has(brand.brand_id) ? "default" : "outline"}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => {
+                        const newSet = new Set(selectedBrandIds)
+                        if (newSet.has(brand.brand_id)) {
+                          newSet.delete(brand.brand_id)
+                        } else {
+                          if (newSet.size < 10) {
+                            newSet.add(brand.brand_id)
+                          }
+                        }
+                        setSelectedBrandIds(newSet)
+                      }}
+                      disabled={!selectedBrandIds.has(brand.brand_id) && selectedBrandIds.size >= 10}
                     >
-                      <ExternalLink className="h-3 w-3" />
-                      View in Meta Ads Library
-                    </a>
-                  )}
+                      {selectedBrandIds.has(brand.brand_id) ? (
+                        <>
+                          <Check className="h-3 w-3 mr-1" />
+                          In Comparison
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-3 w-3 mr-1" />
+                          Add to Comparison
+                        </>
+                      )}
+                    </Button>
+                    {brand.ads_library_url && (
+                      <a
+                        href={brand.ads_library_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 text-sm text-primary hover:underline px-2"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
                 </div>
               </CardContent>
             </Card>

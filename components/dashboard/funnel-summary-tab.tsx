@@ -206,7 +206,7 @@ export function FunnelSummaryTab() {
   const [sortField, setSortField] = useState<SortField>("creatives_count")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())
-  const [topDomainsCount, setTopDomainsCount] = useState<5 | 10>(5)
+  const [topDomainsCount, setTopDomainsCount] = useState<number>(5)
 
   const uniqueBrands = useMemo(() => {
     if (!data) return []
@@ -760,23 +760,24 @@ export function FunnelSummaryTab() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <span className="text-base leading-none">🏆</span>
-                Top {topDomainsCount} Domains by Creative Volume
+                Top {topDomainsCount} Funnel Domains by Creative Volume
               </CardTitle>
-              <div className="flex gap-2">
-                <Button
-                  variant={topDomainsCount === 5 ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setTopDomainsCount(5)}
-                >
-                  Top 5
-                </Button>
-                <Button
-                  variant={topDomainsCount === 10 ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setTopDomainsCount(10)}
-                >
-                  Top 10
-                </Button>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-muted-foreground whitespace-nowrap">Show top:</label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={topDomainsCount}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10)
+                    if (!isNaN(value) && value >= 1 && value <= 10) {
+                      setTopDomainsCount(value)
+                    }
+                  }}
+                  className="w-16 h-8 text-center"
+                />
+                <span className="text-xs text-muted-foreground">(1-10)</span>
               </div>
             </div>
           </CardHeader>
