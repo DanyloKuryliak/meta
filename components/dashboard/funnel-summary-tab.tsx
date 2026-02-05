@@ -488,7 +488,22 @@ export function FunnelSummaryTab() {
       groups[item.funnel_domain].push(item)
     })
 
-    Object.values(groups).forEach((items) => {
+    // Aggregate by brand_name + funnel_url within each domain (one player can have multiple FB pages)
+    const aggregated: Record<string, BrandFunnelSummary[]> = {}
+    for (const [domain, items] of Object.entries(groups)) {
+      const keyed: Record<string, BrandFunnelSummary> = {}
+      for (const item of items) {
+        const name = (item.brand_name || "").trim() || "Unknown"
+        const key = `${name}|${item.funnel_url || ""}|${item.month || ""}`
+        if (!keyed[key]) {
+          keyed[key] = { ...item, creatives_count: 0 }
+        }
+        keyed[key].creatives_count += item.creatives_count
+      }
+      aggregated[domain] = Object.values(keyed)
+    }
+
+    Object.values(aggregated).forEach((items) => {
       items.sort((a, b) => {
         let comparison = 0
         if (sortField === "creatives_count") {
@@ -501,7 +516,7 @@ export function FunnelSummaryTab() {
     })
 
     // Sort domains by total creatives (descending by default)
-    const sortedEntries = Object.entries(groups).sort((a, b) => {
+    const sortedEntries = Object.entries(aggregated).sort((a, b) => {
       const totalA = a[1].reduce((sum, item) => sum + item.creatives_count, 0)
       const totalB = b[1].reduce((sum, item) => sum + item.creatives_count, 0)
       return totalB - totalA

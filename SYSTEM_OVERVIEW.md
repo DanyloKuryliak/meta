@@ -1,127 +1,43 @@
 # Meta Creatives Dashboard - System Overview
 
 ## Purpose
-Marketing team tool to track competitor Meta Ads creatives and funnels. Automatically fetches and maintains data, provides insights for decision-making.
+Marketing team tool to track competitor Meta Ads creatives and funnels. Fetches ads via **Meta Ads Library API** (or optionally Apify), stores data in **Supabase**, and the UI displays summaries from two summary tables.
 
-## Key Features
+## Architecture
 
-### 1. Add Competitor
-- **Simple Form**: Just URL and brand name (optional)
-- **Automatic Fetching**: System automatically fetches trailing 12 months on first add
-- **Smart Updates**: Subsequent fetches only get new data (incremental)
+- **Supabase**: Storage only. Four tables: `brands`, `raw_data`, `brand_creative_summary`, `brand_funnel_summary`.
+- **UI**: Reads only `brand_creative_summary` (Creative Summary tab) and `brand_funnel_summary` (Funnel Summary tab).
+- **Ingestion**: Runs in the Next.js app (no Supabase Edge Functions). Uses Meta Graph API `ads_archive` when `META_ACCESS_TOKEN` is set, otherwise Apify. Writes to `brands` and `raw_data`, then runs local summary population into the two summary tables.
 
-### 2. Data Display
-- **Last 12 Months**: All displays show last 12 months of data
-- **Monthly Activity**: Visual bars showing 12 months of activity per brand
-- **Date Range Filters**: Filter display by All Time, 7 days, 30 days, 90 days, or 12 months (viewing only)
-- **Statistics**: Total, Avg/Month, Peak Month for each brand
+## Database Tables
 
-### 3. Refresh All Brands
-- **One-Click Refresh**: Button in Creative Summary tab
-- **Incremental Updates**: Only fetches new data since last fetch for each brand
-- **Maintains 12 Months**: Ensures trailing 12 months are always available
-- **Auto-Updates**: Summary tables update automatically after refresh
+| Table | Purpose |
+|------|--------|
+| `brands` | Competitors to track; `ads_library_url`, `last_fetched_date`, `last_fetch_status` |
+| `raw_data` | All ad rows from Meta/Apify; source `meta` or `apify` |
+| `brand_creative_summary` | **UI** – aggregated by brand + month (Creative Summary tab) |
+| `brand_funnel_summary` | **UI** – aggregated by brand + funnel URL + month (Funnel Summary tab) |
 
-### 4. Export
-- **Last 12 Months CSV**: Exports all data from last 12 months
-- **Dynamic Years**: Works for any year (2026, 2027, etc.)
-- **Total Column**: Shows total for last 12 months period
-- **No Hardcoded Dates**: All dates are calculated dynamically
+## Ingestion (Local)
 
-## Data Architecture
+- **Meta API** (`lib/meta-ads-api.ts`): Fetches from Graph API `ads_archive` using `search_page_ids` (from `ads_library_url`) and `ad_delivery_date_min` / `ad_delivery_date_max`.
+- **Apify** (optional): Same as former edge function logic; used when `META_ACCESS_TOKEN` is not set and `APIFY_TOKEN` is set.
+- **Flow**: `/api/ingest` or `/api/refresh-all-with-limit` → fetch ads → transform → upsert `raw_data` → update `brands` → populate `brand_creative_summary` and `brand_funnel_summary` via `lib/populate-summaries.ts`.
 
-### Database Tables
+## API Routes (Kept)
 
-**`brands`**
-- Tracks competitors
-- `last_fetched_date`: Last date data was fetched (for incremental updates)
-- `last_fetch_status`: success/error/pending
-- `is_active`: true for brands to track
+- `POST /api/ingest` – Ingest one brand (Meta or Apify); body: `ads_library_url`, optional `brand_name`, `start_date`, `end_date`, `count`, `source` (`meta` | `apify`).
+- `POST /api/refresh-all-with-limit` – Refresh all active brands (uses local ingest).
+- `POST /api/populate` – Rebuild summary tables for one brand or all (body: optional `brand_id`).
+- `POST /api/populate-all-brands` – Populate summaries for all active brands.
+- `POST /api/ingest-apify-json` – Ingest raw Apify JSON array; body: `apify_data`, `brand_name`, `ads_library_url`.
+- `POST /api/seed-brands-csv` – Seed brands from CSV.
 
-**`raw_data`**
-- All ad data from Apify/Meta API
-- Stores complete ad information
-- Source field: "apify" or "meta" (for future)
+## Environment
 
-**`brand_creative_summary`**
-- Aggregated by brand + month
-- Used for Creative Summary tab
-- Auto-updated after each ingestion
+See `env.example`. Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`. For ingestion: `META_ACCESS_TOKEN` (preferred) or `APIFY_TOKEN`.
 
-**`brand_funnel_summary`**
-- Aggregated by brand + funnel URL + month
-- Used for Funnel Summary tab
-- Auto-updated after each ingestion
+## UI
 
-### Smart Fetching Logic
-
-1. **First Time Fetch**:
-   - Fetches trailing 12 months from today
-   - Sets `last_fetched_date` to today
-
-2. **Subsequent Fetches**:
-   - Fetches from `last_fetched_date + 1 day` to today
-   - But ensures minimum of trailing 12 months (in case of gaps)
-   - Updates `last_fetched_date` to today
-
-3. **Result**:
-   - Always maintains 12 months of data
-   - Never re-fetches old data
-   - Efficient API token usage
-
-## API Support
-
-### Current: Apify API
-- Uses `curious_coder~facebook-ads-library-scraper`
-- Date filtering via `start_date_min` and `start_date_max`
-- Fetches all valuable fields (cta_text, media_url, etc.)
-
-### Future: Meta API
-- Ready for Meta API integration
-- Same data transformation pipeline
-- Just update `fetchAdsFromAPI()` function when available
-- Supports `ad_delivery_date_min` and `ad_delivery_date_max`
-
-## Automation
-
-### Manual Refresh
-- Click "Refresh All Brands" button in UI
-- Fetches new data for all active brands
-- Updates all summary tables
-
-### Scheduled Automation (Recommended: n8n)
-- Weekly/daily schedule
-- Calls `run_ingestion_for_all_brands` edge function
-- System handles date ranges automatically
-- See `AUTOMATION_SETUP.md` for details
-
-## UI Features
-
-### Creative Summary Tab
-- Top 5/10 Brands chart (line chart with legend)
-- Monthly activity bars (12 months, hover for exact counts)
-- Date range filter (display only)
-- Export CSV (last 12 months)
-- Search by brand name
-- Sort by total, recent activity, or trend
-
-### Funnel Summary Tab
-- Search by brand name (not domain)
-- Filter by date range
-- Grouped by domain
-- Expandable rows for paths
-- Export CSV
-
-## Best Practices
-
-1. **Regular Refreshes**: Run weekly to keep data current
-2. **Monitor Fetch Status**: Check `last_fetch_status` in database if issues
-3. **Date Filters**: Use UI filters to focus on specific time periods
-4. **Export Regularly**: Export CSV for backup/analysis
-
-## Troubleshooting
-
-- **No data showing**: Check if brands are `is_active = true`
-- **Missing months**: Run refresh to fetch missing periods
-- **Fetch errors**: Check `last_fetch_error` in brands table
-- **Slow performance**: Consider filtering by date range in UI
+- **Creative Summary**: Last 12 months, monthly bars, date filters, export CSV, search/sort.
+- **Funnel Summary**: By domain/URL, date range, expandable rows, export CSV.

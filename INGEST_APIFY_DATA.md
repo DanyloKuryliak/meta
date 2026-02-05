@@ -27,50 +27,12 @@ curl -X POST http://localhost:3000/api/ingest-apify-json \
   -d @apify-data.json
 ```
 
-### 2. `/api/ingest-full-apify`
-Alternative endpoint that accepts the JSON array directly or wrapped in `data` field.
-
-**Request:**
-```json
-[
-  {/* Apify ad object 1 */},
-  {/* Apify ad object 2 */},
-  ...
-]
-```
-
-Or:
-```json
-{
-  "data": [/* array of Apify ad objects */],
-  "brand_name": "Headway App",
-  "ads_library_url": "..."
-}
-```
-
 ## Data Transformation
-The endpoint automatically transforms Apify format to `raw_data` schema:
-- Extracts `ad_archive_id`, `page_id`, `page_name` from ad object
-- Extracts `link_url`, `caption`, `body.text` from `snapshot`
-- Extracts media URLs from `snapshot.images` or `snapshot.videos`
-- Converts Unix timestamps (`start_date`, `end_date`) to ISO dates
-- Maps `display_format` (IMAGE → single_image, VIDEO → video, DPA/DCO → carousel)
-- Creates/updates brand record
-- Populates summary tables automatically
+The endpoint transforms Apify format to `raw_data` schema, creates/updates the brand, upserts into `raw_data`, and populates `brand_creative_summary` and `brand_funnel_summary` locally (no Edge Functions).
 
 ## Testing with Your Data
 
-### Option 1: Using the Node.js Script (Recommended)
-
-1. **Save your Apify JSON array** to a file (e.g., `headway-data.json`)
-   - The file should contain a JSON array: `[{...}, {...}, ...]`
-
-2. **Run the ingestion script:**
-```bash
-node scripts/ingest-headway-data.js headway-data.json
-```
-
-### Option 2: Using curl
+### Using curl
 
 1. **Save your Apify JSON** to a file (e.g., `headway-data.json`)
 
@@ -119,6 +81,46 @@ INSERT INTO raw_data
 SELECT * FROM raw_data_backup 
 ON CONFLICT (id) DO NOTHING;
 ```
+
+## Real brands from CSV (brandslinks.csv)
+
+One **player** (column A) can have multiple **FB pages** (column B). The system stores one brand row per page, all with the same `brand_name` = Player. The UI aggregates by **Brand Name** so one player = one row.
+
+### Seed brands from CSV
+
+```bash
+# Deactivate test brands and upsert real brands from brandslinks.csv
+curl -X POST "http://localhost:3000/api/seed-brands-csv?replace_test=true"
+```
+
+### Scrape 300 creatives per page (Apify)
+
+To run a test scrape with **300 creatives per page** (instead of full 12 months):
+
+```bash
+curl -X POST "http://localhost:3000/api/refresh-all-with-limit" \
+  -H "Content-Type: application/json" \
+  -d '{"limit_per_page": 300}'
+```
+
+This calls the ingest edge function for each active brand with `count: 300`. It can take several minutes if you have many brands. **The system enforces a maximum of 300 creatives per page** (edge function and this API cap at 300).
+
+### End-of-month automation (marketing summary)
+
+To run the creatives + funnel summary automatically at the end of each month:
+
+1. **Cron or scheduler** (e.g. Vercel Cron, n8n, or system cron): call this endpoint once per month (e.g. last day of month):
+   ```bash
+   curl -X POST "https://<your-app>/api/refresh-all-with-limit" \
+     -H "Content-Type: application/json" \
+     -d '{"limit_per_page": 300}'
+   ```
+2. Ensure **APIFY_TOKEN** is set in Supabase Edge Function secrets and **NEXT_PUBLIC_SUPABASE_URL** / **NEXT_PUBLIC_SUPABASE_ANON_KEY** (or **SUPABASE_SERVICE_ROLE_KEY** for server-side) are set in your app env so the refresh can invoke the edge function.
+
+### Export
+
+- **Brand Name** in exports = Player (column A from CSV).
+- Creative Summary and Funnel Summary aggregate by `brand_name`, so multiple FB pages under the same player appear as one row.
 
 ## Notes
 - Duplicate `ad_archive_id` values are automatically skipped

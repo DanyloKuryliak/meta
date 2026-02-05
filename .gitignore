@@ -32,3 +32,6 @@ next-env.d.ts
 
 # automation docs
 AUTOMATION_SETUP.md
+
+# Supabase
+supabase/.temp/

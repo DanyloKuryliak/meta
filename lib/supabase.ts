@@ -54,40 +54,6 @@ export function getSupabaseServerClient() {
   return supabaseServer
 }
 
-/**
- * Get the Edge Function base URL
- * Handles both local Supabase (localhost:54321) and production
- */
-export function getEdgeFunctionUrl(functionName: string): string {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  
-  if (!supabaseUrl) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL environment variable")
-  }
-  
-  // Remove trailing slash if present
-  const baseUrl = supabaseUrl.replace(/\/$/, '')
-  
-  // Check if this is a local Supabase instance
-  // Local Supabase typically runs on localhost:54321
-  if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
-    // For local Supabase, ensure we're using port 54321
-    // If URL already has a port, keep it; otherwise assume 54321
-    let localUrl = baseUrl
-    if (!baseUrl.match(/:\d+$/)) {
-      // No port specified, add default local Supabase port
-      localUrl = baseUrl.replace(/^(https?:\/\/[^\/]+)/, '$1:54321')
-    } else if (!baseUrl.includes(':54321')) {
-      // Different port, replace with 54321 for Edge Functions
-      localUrl = baseUrl.replace(/:\d+$/, ':54321')
-    }
-    return `${localUrl}/functions/v1/${functionName}`
-  }
-  
-  // Production: use the same URL
-  return `${baseUrl}/functions/v1/${functionName}`
-}
-
 export type BrandCreativeSummary = {
   id: string
   brand_id: string

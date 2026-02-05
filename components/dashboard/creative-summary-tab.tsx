@@ -340,19 +340,19 @@ export function CreativeSummaryTab() {
     return { endMonth, monthsInData, lastTwelve }
   }, [data])
 
-  // Process data into brand summaries (without trend calculation - that happens after filtering)
+  // Process data into brand summaries — aggregate by brand_name so one player (multiple FB pages) = one row
   const brandData = useMemo(() => {
     if (!data || data.length === 0) return []
 
     const brandMap: Record<string, BrandData> = {}
 
     for (const row of data) {
-      const id = row.brand_id
-      const name = row.brand_name
-      if (!brandMap[id]) {
+      const name = (row.brand_name || "").trim() || "Unknown"
+      // Use brand_name as key so multiple pages under same player merge into one row
+      if (!brandMap[name]) {
         const initMonth = row.month
-        brandMap[id] = {
-          brand_id: id,
+        brandMap[name] = {
+          brand_id: name,
           brand_name: name,
           ads_library_url: row.ads_library_url,
           total: 0,
@@ -372,11 +372,11 @@ export function CreativeSummaryTab() {
         }
       }
 
-      brandMap[id].total += row.creatives_count
-      brandMap[id].monthlyData.push({ month: row.month, count: row.creatives_count })
+      brandMap[name].total += row.creatives_count
+      brandMap[name].monthlyData.push({ month: row.month, count: row.creatives_count })
       
-      if (row.month < brandMap[id].firstMonth) brandMap[id].firstMonth = row.month
-      if (row.month > brandMap[id].lastMonth) brandMap[id].lastMonth = row.month
+      if (row.month < brandMap[name].firstMonth) brandMap[name].firstMonth = row.month
+      if (row.month > brandMap[name].lastMonth) brandMap[name].lastMonth = row.month
     }
 
     // Build monthly data maps (trends calculated after filtering)
@@ -628,7 +628,7 @@ export function CreativeSummaryTab() {
   const chartData = useMemo(() => {
     let brandsToShow: BrandData[] = []
     
-    // If brands are selected for comparison, show those. Otherwise show top N
+    // If brands are selected for comparison, show those. Otherwise show top N (brand_id is brand_name when aggregated)
     if (selectedBrandIds.size > 0) {
       brandsToShow = filteredBrands.filter(brand => selectedBrandIds.has(brand.brand_id))
     } else {
@@ -717,9 +717,9 @@ export function CreativeSummaryTab() {
         .reduce((sum, m) => sum + m.count, 0)
     }
 
-    // Build CSV rows
+    // Build CSV rows — Brand Name = Player (column A)
     const headers = [
-      'page_name',
+      'Brand Name',
       'Ads Library Link',
       ...exportMonths,
       'Total'
