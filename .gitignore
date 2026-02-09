@@ -35,3 +35,23 @@ AUTOMATION_SETUP.md
 
 # Supabase
 supabase/.temp/
+supabase/.env
+
+# Local / IDE
+.cursor/
+*.log
+
+# Dataset files (large JSON/CSV files)
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!components.json
+*.csv
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+node_modules/

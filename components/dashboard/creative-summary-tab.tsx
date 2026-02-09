@@ -263,7 +263,6 @@ function getTrendBadge(trend: Trend) {
 type BrandData = {
   brand_id: string
   brand_name: string
-  ads_library_url: string | null
   total: number
   recentCount: number
   previousCount: number
@@ -283,17 +282,25 @@ type BrandData = {
   peakMonth?: string
 }
 
-const fetcher = async (): Promise<BrandCreativeSummary[]> => {
+const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<BrandCreativeSummary[]> => {
+  // Return empty array if no businesses are selected
+  if (selectedBusinessIds.size === 0) {
+    return []
+  }
+
   const supabase = getSupabaseClient()
-  // Fetch fresh data - SWR handles caching
-  const { data, error } = await supabase
+  let query = supabase
     .from("brand_creative_summary")
     .select("*")
     .not("brand_id", "is", null)
     .not("brand_name", "is", null)
     .not("month", "is", null)
     .not("creatives_count", "is", null)
-    .order("month", { ascending: false })
+  
+  // Filter by selected businesses
+  query = query.in("business_id", Array.from(selectedBusinessIds))
+  
+  const { data, error } = await query.order("month", { ascending: false })
 
   if (error) {
     console.error("[Creative Summary] Fetch error:", error)
@@ -321,8 +328,9 @@ const fetcher = async (): Promise<BrandCreativeSummary[]> => {
   return normalized
 }
 
-export function CreativeSummaryTab() {
-  const { data, error, isLoading, mutate } = useSWR("creative-summary", fetcher, {
+export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { selectedBusinessIds?: Set<string> }) {
+  const fetcherKey = `creative-summary-${Array.from(selectedBusinessIds).sort().join(",")}`
+  const { data, error, isLoading, mutate } = useSWR(fetcherKey, createFetcher(selectedBusinessIds), {
     revalidateOnMount: true, // Always fetch fresh data on mount
   })
   const [searchQuery, setSearchQuery] = useState("")
@@ -354,7 +362,6 @@ export function CreativeSummaryTab() {
         brandMap[name] = {
           brand_id: name,
           brand_name: name,
-          ads_library_url: row.ads_library_url,
           total: 0,
           recentCount: 0,
           previousCount: 0,
@@ -615,14 +622,12 @@ export function CreativeSummaryTab() {
     const totalBrands = filteredBrands.length
     const totalCreatives = filteredBrands.reduce((sum, b) => sum + b.total, 0)
     const growingBrands = filteredBrands.filter(b => b.trend === "up").length
-    const dateRange = getDateFilterRange
     return { 
       totalBrands, 
       totalCreatives, 
-      growingBrands, 
-      totalMonths: dateRange.months.length 
+      growingBrands
     }
-  }, [filteredBrands, getDateFilterRange])
+  }, [filteredBrands])
 
   // Chart data - Top N by total volume OR selected brands with monthly data for line chart (uses filtered data)
   const chartData = useMemo(() => {
@@ -731,7 +736,6 @@ export function CreativeSummaryTab() {
 
       return [
         brand.brand_name,
-        brand.ads_library_url || '',
         ...monthlyValues,
         total
       ]
@@ -817,23 +821,6 @@ export function CreativeSummaryTab() {
             <p className="text-2xl font-bold text-green-600">{stats.growingBrands}</p>
             <p className="text-xs text-muted-foreground mt-1">
               {stats.totalBrands > 0 ? Math.round((stats.growingBrands / stats.totalBrands) * 100) : 0}% of total
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="overflow-hidden bg-gradient-to-br from-amber-500/10 via-card to-card">
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground flex items-center gap-2">
-              <span className="text-base leading-none">📊</span>
-              Period Range
-            </p>
-            <p className="text-sm font-bold">
-              {(() => {
-                const dateRange = getDateFilterRange
-                return `${formatMonthShort(dateRange.start)} – ${formatMonthShort(dateRange.end)}`
-              })()}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {stats.totalMonths} months shown
             </p>
           </CardContent>
         </Card>
@@ -1186,16 +1173,6 @@ export function CreativeSummaryTab() {
                         </>
                       )}
                     </Button>
-                    {brand.ads_library_url && (
-                      <a
-                        href={brand.ads_library_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center justify-center gap-2 text-sm text-primary hover:underline px-2"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
                   </div>
                 </div>
               </CardContent>
@@ -1297,15 +1274,6 @@ export function CreativeSummaryTab() {
                       {brand.trend === "up" && <TrendingUp className="h-4 w-4 text-green-600 mx-auto" />}
                       {brand.trend === "down" && <TrendingDown className="h-4 w-4 text-red-600 mx-auto" />}
                       {brand.trend === "inactive" && <span className="text-muted-foreground">😴</span>}
-                    </TableCell>
-                    <TableCell>
-                      {brand.ads_library_url && (
-                        <a href={brand.ads_library_url} target="_blank" rel="noopener noreferrer">
-                          <Button variant="ghost" size="sm">
-                            <ExternalLink className="h-4 w-4" />
-                          </Button>
-                        </a>
-                      )}
                     </TableCell>
                   </TableRow>
                 ))}

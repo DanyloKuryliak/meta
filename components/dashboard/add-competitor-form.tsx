@@ -8,7 +8,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, Plus, CheckCircle, AlertCircle } from "lucide-react"
+import { getSupabaseClient } from "@/lib/supabase"
+import type { Business } from "@/lib/supabase"
 
 type IngestResult = {
   success: boolean
@@ -16,23 +19,29 @@ type IngestResult = {
   error?: string
   brand?: {
     id: string
-    name: string
-    ads_library_url: string
+    brand_name: string
   }
   ingestion?: {
     inserted: number
-    brand_id: string
-    ads_processed: number
+    transformed: number
+    received: number
   }
   summaries?: {
-    creative_summary: { inserted: number }
-    funnel_summary: { inserted: number }
+    creative: number
+    funnel: number
   }
 }
 
-export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
+export function AddCompetitorForm({ 
+  onSuccess,
+  businesses = []
+}: { 
+  onSuccess?: () => void
+  businesses?: Business[]
+}) {
   const [adsLibraryUrl, setAdsLibraryUrl] = useState("")
   const [brandName, setBrandName] = useState("")
+  const [selectedBusinessId, setSelectedBusinessId] = useState<string>("")
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<IngestResult | null>(null)
 
@@ -41,24 +50,50 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
     setIsLoading(true)
     setResult(null)
 
+    if (!selectedBusinessId) {
+      setResult({ success: false, error: "Please select a business" })
+      setIsLoading(false)
+      return
+    }
+
     try {
-      // Use our API route which can call edge function with service role key
-      // Fetch trailing 12 months automatically
-      const response = await fetch("/api/ingest", {
+      const supabase = getSupabaseClient()
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      if (!supabaseUrl || !anonKey) throw new Error("Supabase configuration missing")
+
+      // Call Edge Function with authentication
+      const response = await fetch(`${supabaseUrl}/functions/v1/ingest_from_url`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Authorization": `Bearer ${anonKey}`,
+          "apikey": anonKey,
         },
         body: JSON.stringify({
           ads_library_url: adsLibraryUrl,
           brand_name: brandName || undefined,
+          business_id: selectedBusinessId,
         }),
       })
 
-      const data = await response.json()
+      let data: any
+      try {
+        data = await response.json()
+      } catch (jsonError) {
+        const text = await response.text()
+        setResult({ 
+          success: false, 
+          error: `Invalid response: ${text.substring(0, 200)}` 
+        })
+        return
+      }
       
       if (!response.ok) {
-        setResult({ success: false, error: data.error || `HTTP ${response.status}` })
+        setResult({ 
+          success: false, 
+          error: data.error?.message || data.error || `HTTP ${response.status}: ${JSON.stringify(data).substring(0, 200)}` 
+        })
         return
       }
       
@@ -68,6 +103,7 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
         // Clear form on success
         setAdsLibraryUrl("")
         setBrandName("")
+        setSelectedBusinessId("")
         
         // Call onSuccess callback to refresh dashboard data
         if (onSuccess) {
@@ -114,6 +150,29 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
           </div>
 
           <div className="space-y-2">
+            <Label htmlFor="business-select">Business *</Label>
+            <Select value={selectedBusinessId} onValueChange={setSelectedBusinessId} required>
+              <SelectTrigger id="business-select" className="bg-muted border-border">
+                <SelectValue placeholder="Select a business" />
+              </SelectTrigger>
+              <SelectContent>
+                {businesses.length === 0 ? (
+                  <SelectItem value="" disabled>No businesses available</SelectItem>
+                ) : (
+                  businesses.map((business) => (
+                    <SelectItem key={business.id} value={business.id}>
+                      {business.business_name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Select which business this competitor belongs to.
+            </p>
+          </div>
+
+          <div className="space-y-2">
             <Label htmlFor="brand-name">Brand Name (Optional)</Label>
             <Input
               id="brand-name"
@@ -124,13 +183,13 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
               className="bg-muted border-border"
             />
             <p className="text-xs text-muted-foreground">
-              Leave empty to auto-extract from URL. System will automatically fetch last 12 months of data.
+              Leave empty to auto-extract from URL. System will automatically fetch last 30 days of data.
             </p>
           </div>
 
           <Button 
             type="submit" 
-            disabled={isLoading || !adsLibraryUrl}
+            disabled={isLoading || !adsLibraryUrl || !selectedBusinessId}
             className="w-full md:w-auto"
           >
             {isLoading ? (
@@ -157,18 +216,18 @@ export function AddCompetitorForm({ onSuccess }: { onSuccess?: () => void }) {
                   <p>{result.message}</p>
                   {result.brand && (
                     <p className="mt-1">
-                      Brand: <strong>{result.brand.name}</strong>
+                      Brand: <strong>{result.brand.brand_name}</strong>
                     </p>
                   )}
                   {result.ingestion && (
                     <p className="mt-1">
-                      Processed {result.ingestion.ads_processed} ads, inserted {result.ingestion.inserted} new records.
+                      Received {result.ingestion.received} ads, inserted {result.ingestion.inserted} new records.
                     </p>
                   )}
                   {result.summaries && (
                     <p className="mt-1">
-                      Creative summaries: {result.summaries.creative_summary.inserted} | 
-                      Funnel summaries: {result.summaries.funnel_summary.inserted}
+                      Creative summaries: {result.summaries.creative} | 
+                      Funnel summaries: {result.summaries.funnel}
                     </p>
                   )}
                 </AlertDescription>

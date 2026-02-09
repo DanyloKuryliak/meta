@@ -1,43 +1,44 @@
 # Meta Creatives Dashboard - System Overview
 
 ## Purpose
-Marketing team tool to track competitor Meta Ads creatives and funnels. Fetches ads via **Meta Ads Library API** (or optionally Apify), stores data in **Supabase**, and the UI displays summaries from two summary tables.
+Marketing team tool to track competitor Meta Ads creatives and funnels for Genesis businesses. Fetches ads via **Apify**, stores data in **Supabase**, and the UI displays summaries filtered by selected businesses.
 
 ## Architecture
 
-- **Supabase**: Storage only. Four tables: `brands`, `raw_data`, `brand_creative_summary`, `brand_funnel_summary`.
-- **UI**: Reads only `brand_creative_summary` (Creative Summary tab) and `brand_funnel_summary` (Funnel Summary tab).
-- **Ingestion**: Runs in the Next.js app (no Supabase Edge Functions). Uses Meta Graph API `ads_archive` when `META_ACCESS_TOKEN` is set, otherwise Apify. Writes to `brands` and `raw_data`, then runs local summary population into the two summary tables.
+- **Supabase**: Database storage and Edge Functions for all server-side logic.
+- **UI**: Reads from `brand_creative_summary` (Creative Summary tab) and `brand_funnel_summary` (Funnel Summary tab), filtered by selected businesses.
+- **Ingestion**: All logic runs in Supabase Edge Functions. Uses Apify to fetch ads, writes to `brands` and `raw_data`, then populates summary tables.
 
 ## Database Tables
 
 | Table | Purpose |
 |------|--------|
-| `brands` | Competitors to track; `ads_library_url`, `last_fetched_date`, `last_fetch_status` |
-| `raw_data` | All ad rows from Meta/Apify; source `meta` or `apify` |
-| `brand_creative_summary` | **UI** – aggregated by brand + month (Creative Summary tab) |
-| `brand_funnel_summary` | **UI** – aggregated by brand + funnel URL + month (Funnel Summary tab) |
+| `businesses` | Genesis businesses that can be toggled on/off in UI |
+| `brands` | Competitors to track; linked to `businesses` via `business_id` |
+| `raw_data` | All ad rows from Apify; source `apify` or `json` |
+| `brand_creative_summary` | **UI** – aggregated by brand + month + business_id (Creative Summary tab) |
+| `brand_funnel_summary` | **UI** – aggregated by brand + funnel URL + month + business_id (Funnel Summary tab) |
 
-## Ingestion (Local)
+## Supabase Edge Functions
 
-- **Meta API** (`lib/meta-ads-api.ts`): Fetches from Graph API `ads_archive` using `search_page_ids` (from `ads_library_url`) and `ad_delivery_date_min` / `ad_delivery_date_max`.
-- **Apify** (optional): Same as former edge function logic; used when `META_ACCESS_TOKEN` is not set and `APIFY_TOKEN` is set.
-- **Flow**: `/api/ingest` or `/api/refresh-all-with-limit` → fetch ads → transform → upsert `raw_data` → update `brands` → populate `brand_creative_summary` and `brand_funnel_summary` via `lib/populate-summaries.ts`.
+- **`ingest_from_url`**: Fetches ads from Apify using Ads Library URL, creates/updates brand, inserts raw_data, and populates summaries. Requires `business_id`.
+- **`populate_summaries`**: Rebuilds both summary tables for a brand or business. Filters by `business_id` when provided.
+- **`parse_json_creatives`**: Parses ready JSON files with creatives for a business. Accepts `creatives` array, `business_id`, optional `brand_name` and `ads_library_url`.
 
-## API Routes (Kept)
+## UI Features
 
-- `POST /api/ingest` – Ingest one brand (Meta or Apify); body: `ads_library_url`, optional `brand_name`, `start_date`, `end_date`, `count`, `source` (`meta` | `apify`).
-- `POST /api/refresh-all-with-limit` – Refresh all active brands (uses local ingest).
-- `POST /api/populate` – Rebuild summary tables for one brand or all (body: optional `brand_id`).
-- `POST /api/populate-all-brands` – Populate summaries for all active brands.
-- `POST /api/ingest-apify-json` – Ingest raw Apify JSON array; body: `apify_data`, `brand_name`, `ads_library_url`.
-- `POST /api/seed-brands-csv` – Seed brands from CSV.
+- **Business Toggle**: Users can toggle businesses on/off to filter competitors
+- **Add Competitor**: Form to add competitor with business selection
+- **Creative Summary**: Shows creatives by brand + month, filtered by selected businesses
+- **Funnel Summary**: Shows funnels by domain/URL, filtered by selected businesses
 
 ## Environment
 
-See `env.example`. Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`. For ingestion: `META_ACCESS_TOKEN` (preferred) or `APIFY_TOKEN`.
+See `env.example`. Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Edge Functions use `APIFY_TOKEN` (configured in Supabase dashboard).
 
-## UI
+## Data Flow
 
-- **Creative Summary**: Last 12 months, monthly bars, date filters, export CSV, search/sort.
-- **Funnel Summary**: By domain/URL, date range, expandable rows, export CSV.
+1. User toggles businesses → UI filters summaries by `business_id`
+2. User adds competitor → Calls `ingest_from_url` Edge Function → Fetches from Apify → Inserts raw_data → Populates summaries
+3. User uploads JSON → Calls `parse_json_creatives` Edge Function → Parses JSON → Inserts raw_data → Populates summaries
+4. UI refreshes summaries every 10-15 seconds via SWR

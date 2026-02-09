@@ -60,10 +60,7 @@ export type BrandCreativeSummary = {
   brand_name: string
   month: string
   creatives_count: number
-  total_active_days: number
-  ads_library_url: string | null
-  created_at: string
-  updated_at: string
+  business_id?: string | null
 }
 
 export type BrandFunnelSummary = {
@@ -72,12 +69,15 @@ export type BrandFunnelSummary = {
   brand_name: string
   funnel_url: string
   funnel_domain: string
-  funnel_path: string | null
   month: string
   creatives_count: number
-  ads_library_url: string | null
-  funnel_type: 'tracking_link' | 'app_store' | 'quiz_funnel' | 'landing_page' | 'unknown' | null
-  campaign_info: Record<string, string> | null
+  business_id?: string | null
+}
+
+export type Business = {
+  id: string
+  business_name: string
+  is_active: boolean
   created_at: string
   updated_at: string
 }

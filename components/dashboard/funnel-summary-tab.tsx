@@ -153,9 +153,14 @@ const FUNNEL_TYPE_CONFIG: Record<FunnelType, { label: string; color: string; ico
   },
 }
 
-const fetcher = async (): Promise<BrandFunnelSummary[]> => {
+const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<BrandFunnelSummary[]> => {
+  // Return empty array if no businesses are selected
+  if (selectedBusinessIds.size === 0) {
+    return []
+  }
+
   const supabase = getSupabaseClient()
-  const { data, error } = await supabase
+  let query = supabase
     .from("brand_funnel_summary")
     .select("*")
     .not("brand_name", "is", null)
@@ -164,7 +169,11 @@ const fetcher = async (): Promise<BrandFunnelSummary[]> => {
     .not("month", "is", null)
     .not("creatives_count", "is", null)
     .gt("creatives_count", 0)
-    .order("month", { ascending: false })
+  
+  // Filter by selected businesses
+  query = query.in("business_id", Array.from(selectedBusinessIds))
+  
+  const { data, error } = await query.order("month", { ascending: false })
 
   if (error) {
     console.error("[Funnel Summary] Fetch error:", error)
@@ -192,8 +201,9 @@ const fetcher = async (): Promise<BrandFunnelSummary[]> => {
   return normalized
 }
 
-export function FunnelSummaryTab() {
-  const { data, error, isLoading, mutate } = useSWR("funnel-summary", fetcher, {
+export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selectedBusinessIds?: Set<string> }) {
+  const fetcherKey = `funnel-summary-${Array.from(selectedBusinessIds).sort().join(",")}`
+  const { data, error, isLoading, mutate } = useSWR(fetcherKey, createFetcher(selectedBusinessIds), {
     revalidateOnMount: true, // Always fetch fresh data on mount
   })
 
@@ -201,7 +211,7 @@ export function FunnelSummaryTab() {
   const [selectedTypes, setSelectedTypes] = useState<FunnelType[]>([])
   const [selectedNiches, setSelectedNiches] = useState<FunnelType[]>([])
   const [brandSearch, setBrandSearch] = useState("")
-  const [dateRangeFilter, setDateRangeFilter] = useState<"3months" | "6months" | "12months" | "lastmonth">("12months")
+  const [dateFilter, setDateFilter] = useState<"lastmonth" | "3months" | "6months" | "12months">("12months")
   const [trendFilter, setTrendFilter] = useState<"all" | "up" | "down">("all")
   const [sortField, setSortField] = useState<SortField>("creatives_count")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
@@ -218,28 +228,11 @@ export function FunnelSummaryTab() {
 
   const formatMonth = (month: string) => formatMonthShort(month)
 
-  // First filter: brand search
-  const filteredData = useMemo(() => {
-    if (!data) return []
-
-    const brandSearchLower = brandSearch.toLowerCase().trim()
-
-    return data.filter((item) => {
-      // Brand search filter
-      if (brandSearchLower && !item.brand_name.toLowerCase().includes(brandSearchLower)) {
-        return false
-      }
-      
-      return true
-    })
-  }, [data, brandSearch])
-
   // Get global months for date filtering
   const globalMonths = useMemo(() => {
     const monthsInData = [...new Set((data || []).map((d) => d.month))].sort()
     const endMonth = monthsInData.at(-1) || monthStartUTC(new Date())
-    const lastTwelve = buildLastNMonths(endMonth, 12)
-    return { endMonth, monthsInData, lastTwelve }
+    return { endMonth, monthsInData }
   }, [data])
 
   // Get date filter range
@@ -247,7 +240,7 @@ export function FunnelSummaryTab() {
     const endMonth = globalMonths.endMonth
     let monthsToInclude = 0
     
-    switch (dateRangeFilter) {
+    switch (dateFilter) {
       case "3months":
         monthsToInclude = 3
         break
@@ -258,7 +251,7 @@ export function FunnelSummaryTab() {
         monthsToInclude = 12
         break
       case "lastmonth":
-        monthsToInclude = 3 // Show 3 months visual, but only last month has data
+        monthsToInclude = 1
         break
       default:
         monthsToInclude = 12
@@ -270,25 +263,41 @@ export function FunnelSummaryTab() {
       end: filteredMonths[filteredMonths.length - 1], 
       months: filteredMonths
     }
-  }, [dateRangeFilter, globalMonths.endMonth])
+  }, [dateFilter, globalMonths.endMonth])
 
-  // Filter data by date range first (before trend calculation)
-  const dateFilteredDataForTrends = useMemo(() => {
-    if (!filteredData) return []
+  // First filter: brand search and date filter
+  const filteredData = useMemo(() => {
+    if (!data) return []
+
+    const brandSearchLower = brandSearch.toLowerCase().trim()
     const dateRange = getDateFilterRange
     const monthsSet = new Set(dateRange.months)
-    return filteredData.filter(item => monthsSet.has(item.month))
-  }, [filteredData, getDateFilterRange])
+    const isLastMonthFilter = dateFilter === "lastmonth"
+    const lastMonthOnly = isLastMonthFilter ? dateRange.end : null
 
-  // Calculate domain trends and growth % based on selected time period (like creatives)
+    return data.filter((item) => {
+      // Brand search filter
+      if (brandSearchLower && !item.brand_name.toLowerCase().includes(brandSearchLower)) {
+        return false
+      }
+      
+      // Date filter
+      if (isLastMonthFilter && lastMonthOnly) {
+        if (item.month !== lastMonthOnly) return false
+      } else {
+        if (!monthsSet.has(item.month)) return false
+      }
+      
+      return true
+    })
+  }, [data, brandSearch, getDateFilterRange, dateFilter])
+
+  // Calculate domain trends - simplified without date filtering
   const domainTrends = useMemo(() => {
-    const dateRange = getDateFilterRange
-    const sortedMonths = [...dateRange.months].sort()
-    
     // Aggregate data by domain and month - sum creatives_count per domain per month
     const domainMonthMap: Record<string, Record<string, number>> = {}
     
-    dateFilteredDataForTrends.forEach(item => {
+    filteredData.forEach(item => {
       if (!domainMonthMap[item.funnel_domain]) {
         domainMonthMap[item.funnel_domain] = {}
       }
@@ -302,31 +311,8 @@ export function FunnelSummaryTab() {
     const growthLabels: Record<string, string> = {}
     
     Object.entries(domainMonthMap).forEach(([domain, months]) => {
-      // Convert to array format for trend calculation
-      const monthlyCounts = sortedMonths.map(month => ({
-        month,
-        count: months[month] || 0
-      }))
+      const sortedMonths = Object.keys(months).sort()
       
-      // For last month filter, don't calculate percentages
-      if (dateRangeFilter === "lastmonth") {
-        const lastMonth = sortedMonths[sortedMonths.length - 1]
-        const lastCount = months[lastMonth] || 0
-        if (lastCount === 0) {
-          trends[domain] = "inactive"
-          growthPercents[domain] = 0
-          growthLabels[domain] = "—"
-        } else {
-          trends[domain] = "up"
-          growthPercents[domain] = 0
-          growthLabels[domain] = "—"
-        }
-        return
-      }
-      
-      // For 3+ months: calculate % change for each consecutive pair and average them
-      // 3 months: compare 1-2, 2-3 and average
-      // 6 months: compare 1-2, 2-3, 3-4, 4-5, 5-6 and average
       if (sortedMonths.length < 2) {
         const lastMonth = sortedMonths[sortedMonths.length - 1]
         const lastCount = months[lastMonth] || 0
@@ -342,7 +328,7 @@ export function FunnelSummaryTab() {
         return
       }
       
-      // Calculate growth % for each consecutive month pair
+      // Calculate growth % for each consecutive month pair and average
       const growthRates: number[] = []
       for (let i = 0; i < sortedMonths.length - 1; i++) {
         const currentMonth = sortedMonths[i]
@@ -351,13 +337,10 @@ export function FunnelSummaryTab() {
         const nextCount = months[nextMonth] || 0
         
         if (currentCount === 0 && nextCount > 0) {
-          // New activity
           growthRates.push(Infinity)
         } else if (currentCount > 0 && nextCount === 0) {
-          // Stopped
           growthRates.push(-100)
         } else if (currentCount > 0) {
-          // Normal calculation
           const growth = ((nextCount - currentCount) / currentCount) * 100
           growthRates.push(growth)
         }
@@ -370,7 +353,6 @@ export function FunnelSummaryTab() {
         return
       }
       
-      // Average the growth rates (handle Infinity separately)
       const hasInfinity = growthRates.some(r => r === Infinity)
       const finiteRates = growthRates.filter(r => r !== Infinity)
       
@@ -394,96 +376,35 @@ export function FunnelSummaryTab() {
     })
     
     return { trends, growthPercents, growthLabels }
-  }, [dateFilteredDataForTrends, getDateFilterRange, dateRangeFilter])
+  }, [filteredData])
 
-  // Filter data by date range and other filters
-  const dateFilteredData = useMemo(() => {
+  // Use filteredData directly (no date filtering)
+  const displayData = useMemo(() => {
     if (!filteredData) return []
     
-    const dateRange = getDateFilterRange
-    const isLastMonthFilter = dateRangeFilter === "lastmonth"
-    const lastMonthOnly = isLastMonthFilter ? dateRange.end : null
-    
-    // Apply date filter - for "lastmonth", only include the last month's data
-    let result: typeof filteredData
-    if (isLastMonthFilter && lastMonthOnly) {
-      result = filteredData.filter(item => item.month === lastMonthOnly)
-    } else {
-      const monthsSet = new Set(dateRange.months)
-      result = filteredData.filter(item => monthsSet.has(item.month))
+    // Apply trend filter only
+    if (trendFilter !== "all") {
+      return filteredData.filter(item => domainTrends.trends[item.funnel_domain] === trendFilter)
     }
     
-    // Apply trend filter (excluding inactive) - but not when last month is selected
-    if (trendFilter !== "all" && !isLastMonthFilter) {
-      result = result.filter(item => domainTrends.trends[item.funnel_domain] === trendFilter)
-    }
-    
-    return result
-  }, [filteredData, getDateFilterRange, dateRangeFilter, trendFilter, domainTrends])
+    return filteredData
+  }, [filteredData, trendFilter, domainTrends])
 
-  // Calculate stats with trend indicators (vs previous period)
+  // Calculate stats - simplified
   const stats = useMemo(() => {
-    const dateRange = getDateFilterRange
-    const currentMonths = new Set(dateRange.months)
-    
-    // Get previous period (same length, before current period)
-    const sortedMonths = [...dateRange.months].sort()
-    if (sortedMonths.length === 0) {
-      return { totalFunnels: 0, totalCreatives: 0, uniqueDomains: 0, trends: {} }
-    }
-    
-    const periodLength = sortedMonths.length
-    const firstMonth = parseMonthStart(sortedMonths[0])
-    if (!firstMonth) {
-      return { totalFunnels: 0, totalCreatives: 0, uniqueDomains: 0, trends: {} }
-    }
-    
-    // Calculate previous period months
-    const previousPeriodStart = addMonthsUTC(firstMonth, -periodLength)
-    const previousMonths: string[] = []
-    for (let i = 0; i < periodLength; i++) {
-      previousMonths.push(monthStartUTC(addMonthsUTC(previousPeriodStart, i)))
-    }
-    const previousMonthsSet = new Set(previousMonths)
-    
-    // Current period stats
-    const currentData = filteredData.filter(item => currentMonths.has(item.month))
-    const totalFunnels = currentData.length
-    const totalCreatives = currentData.reduce((sum, item) => sum + item.creatives_count, 0)
-    const uniqueDomains = new Set(currentData.map(item => item.funnel_domain)).size
-    
-    // Previous period stats
-    const previousData = filteredData.filter(item => previousMonthsSet.has(item.month))
-    const prevTotalFunnels = previousData.length
-    const prevTotalCreatives = previousData.reduce((sum, item) => sum + item.creatives_count, 0)
-    const prevUniqueDomains = new Set(previousData.map(item => item.funnel_domain)).size
-    
-    // Calculate trends
-    const calculateTrend = (current: number, previous: number) => {
-      if (previous === 0) return current > 0 ? { direction: "up" as const, percent: 100, label: "New" } : { direction: "neutral" as const, percent: 0, label: "—" }
-      const percent = ((current - previous) / previous) * 100
-      return {
-        direction: percent > 0 ? "up" as const : percent < 0 ? "down" as const : "neutral" as const,
-        percent: Math.abs(percent),
-        label: `${percent > 0 ? "+" : ""}${Math.round(percent)}%`
-      }
-    }
+    const uniqueDomains = new Set(displayData.map(item => item.funnel_domain)).size
+    const totalCreatives = displayData.reduce((sum, item) => sum + item.creatives_count, 0)
     
     return {
-      totalFunnels,
+      totalFunnels: displayData.length,
       totalCreatives,
       uniqueDomains,
-      trends: {
-        funnels: calculateTrend(totalFunnels, prevTotalFunnels),
-        creatives: calculateTrend(totalCreatives, prevTotalCreatives),
-        domains: calculateTrend(uniqueDomains, prevUniqueDomains),
-      }
     }
-  }, [dateFilteredData, filteredData, getDateFilterRange])
+  }, [displayData])
 
   const groupedByDomain = useMemo(() => {
     const groups: Record<string, BrandFunnelSummary[]> = {}
-    dateFilteredData.forEach((item) => {
+    displayData.forEach((item) => {
       if (!groups[item.funnel_domain]) groups[item.funnel_domain] = []
       groups[item.funnel_domain].push(item)
     })
@@ -523,7 +444,7 @@ export function FunnelSummaryTab() {
     })
 
     return sortedEntries
-  }, [dateFilteredData, sortField, sortDirection])
+  }, [displayData, sortField, sortDirection])
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -556,7 +477,6 @@ export function FunnelSummaryTab() {
   const collapseAll = () => setExpandedDomains(new Set())
 
   const clearFilters = () => {
-    setDateRangeFilter("12months")
     setTrendFilter("all")
     setBrandSearch("")
   }
@@ -566,7 +486,7 @@ export function FunnelSummaryTab() {
     // Aggregate by domain and month
     const domainMonthMap: Record<string, Record<string, number>> = {}
     
-    dateFilteredData.forEach((item) => {
+    displayData.forEach((item) => {
       if (!domainMonthMap[item.funnel_domain]) {
         domainMonthMap[item.funnel_domain] = {}
       }
@@ -586,14 +506,10 @@ export function FunnelSummaryTab() {
     const sorted = domainTotals.sort((a, b) => b.total - a.total)
     const topDomains = sorted.slice(0, topDomainsCount)
     
-    // Get months from the filtered range
-    const dateRange = getDateFilterRange
-    const isLastMonthFilter = dateRangeFilter === "lastmonth"
-    
-    // For "lastmonth", show only the last month (single data point)
-    const sortedMonths = isLastMonthFilter 
-      ? [dateRange.end] // Only last month
-      : [...dateRange.months].sort()
+    // Get all unique months from data
+    const allMonths = new Set<string>()
+    displayData.forEach(item => allMonths.add(item.month))
+    const sortedMonths = Array.from(allMonths).sort()
     
     // Generate colors for each domain
     const colors = [
@@ -626,19 +542,16 @@ export function FunnelSummaryTab() {
         total: domainData.total,
       })),
     }
-  }, [dateFilteredData, topDomainsCount, getDateFilterRange, dateRangeFilter])
+  }, [displayData, topDomainsCount])
 
   const exportCSV = () => {
-    const headers = ["Brand Name", "Domain", "Path", "Full URL", "Type", "Month", "Creatives Count", "Ads Library URL"]
-    const rows = dateFilteredData.map((item) => [
+    const headers = ["Brand Name", "Domain", "Full URL", "Month", "Creatives Count"]
+    const rows = displayData.map((item) => [
       item.brand_name,
       item.funnel_domain,
-      item.funnel_path || "",
       item.funnel_url,
-      item.funnel_type || "landing_page",
       formatMonth(item.month),
       item.creatives_count,
-      item.ads_library_url || "",
     ])
     const csv = [headers, ...rows].map((row) => row.join(",")).join("\n")
     const blob = new Blob([csv], { type: "text/csv" })
@@ -718,16 +631,16 @@ export function FunnelSummaryTab() {
         </Card>
       </div>
 
-      {/* Filters - Simplified */}
+      {/* Filters */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-lg">Filters</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label>Date Range</Label>
-              <Select value={dateRangeFilter} onValueChange={(v) => setDateRangeFilter(v as typeof dateRangeFilter)}>
+              <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as typeof dateFilter)}>
                 <SelectTrigger className="bg-muted border-border">
                   <SelectValue placeholder="Date Range" />
                 </SelectTrigger>
@@ -739,25 +652,19 @@ export function FunnelSummaryTab() {
                 </SelectContent>
               </Select>
             </div>
-            {dateRangeFilter !== "lastmonth" && (
-              <div className="space-y-2">
-                <Label>Trend</Label>
-                <Select value={trendFilter} onValueChange={(v) => setTrendFilter(v as typeof trendFilter)}>
-                  <SelectTrigger className="bg-muted border-border">
-                    <SelectValue placeholder="All Trends" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Trends</SelectItem>
-                    <SelectItem value="up">Growing</SelectItem>
-                    <SelectItem value="down">Declining</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+            <div className="space-y-2">
+              <Label>Search Brand</Label>
+              <Input
+                placeholder="Search by brand name..."
+                value={brandSearch}
+                onChange={(e) => setBrandSearch(e.target.value)}
+                className="bg-muted border-border"
+              />
+            </div>
             <div className="space-y-2">
               <Label>&nbsp;</Label>
               <Button variant="outline" onClick={() => {
-                setDateRangeFilter("12months")
+                setDateFilter("12months")
                 setTrendFilter("all")
                 setBrandSearch("")
               }} className="w-full bg-transparent">
@@ -820,22 +727,19 @@ export function FunnelSummaryTab() {
                       padding: "8px 12px"
                     }}
                   />
-                  {chartData.domains.map((domain, index) => {
-                    const isLastMonth = dateRangeFilter === "lastmonth"
-                    return (
-                      <Line
-                        key={domain.name}
-                        type={isLastMonth ? "linear" : "monotone"}
-                        dataKey={domain.name}
-                        stroke={domain.color}
-                        strokeWidth={isLastMonth ? 0 : 2} // Hide line when last month (show only dots)
-                        dot={{ r: 4, fill: domain.color }}
-                        activeDot={{ r: 8 }}
-                        name={domain.name}
-                        connectNulls={false}
-                      />
-                    )
-                  })}
+                  {chartData.domains.map((domain, index) => (
+                    <Line
+                      key={domain.name}
+                      type="monotone"
+                      dataKey={domain.name}
+                      stroke={domain.color}
+                      strokeWidth={2}
+                      dot={{ r: 4, fill: domain.color }}
+                      activeDot={{ r: 8 }}
+                      name={domain.name}
+                      connectNulls={false}
+                    />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -854,7 +758,7 @@ export function FunnelSummaryTab() {
                     <span className="text-sm text-muted-foreground">
                       {domain.name.length > 25 ? domain.name.substring(0, 25) + "…" : domain.name}
                     </span>
-                    {dateRangeFilter !== "lastmonth" && growthInfo && growthInfo !== "—" && (
+                    {growthInfo && growthInfo !== "—" && (
                       <span className={`text-xs font-semibold ${
                         isGrowing ? "text-green-600" : "text-red-600"
                       }`}>
@@ -900,7 +804,6 @@ export function FunnelSummaryTab() {
               <TableHeader>
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="w-12"></TableHead>
-                  <TableHead>Domain / Path</TableHead>
                   <TableHead>Brand</TableHead>
                   <TableHead className="cursor-pointer" onClick={() => handleSort("month")}>
                     <div className="flex items-center">Month<SortIcon field="month" /></div>
@@ -908,13 +811,13 @@ export function FunnelSummaryTab() {
                   <TableHead className="cursor-pointer" onClick={() => handleSort("creatives_count")}>
                     <div className="flex items-center">Ads<SortIcon field="creatives_count" /></div>
                   </TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead>View</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {groupedByDomain.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
                       No data found. Try adjusting filters or add competitors.
                     </TableCell>
                   </TableRow>
@@ -926,8 +829,6 @@ export function FunnelSummaryTab() {
                     const monthDisplay = uniqueMonthKeys.length === 1
                       ? monthKeyToLabel(uniqueMonthKeys[0])
                       : `${monthKeyToLabel(uniqueMonthKeys[0])} - ${monthKeyToLabel(uniqueMonthKeys[uniqueMonthKeys.length - 1])}`
-                    const adsLibraryUrl = items.find(item => item.ads_library_url)?.ads_library_url
-
                     return (
                       <React.Fragment key={domain}>
                         <TableRow
@@ -941,48 +842,25 @@ export function FunnelSummaryTab() {
                           <TableCell className="text-muted-foreground">{items.length} paths</TableCell>
                           <TableCell className="text-muted-foreground">{monthDisplay}</TableCell>
                           <TableCell className="font-semibold">{totalCreatives.toLocaleString()}</TableCell>
-                          <TableCell>
-                            {adsLibraryUrl && (
-                              <a
-                                href={adsLibraryUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-primary hover:underline text-sm"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                View Ads <ExternalLink className="h-3 w-3" />
-                              </a>
-                            )}
-                          </TableCell>
                         </TableRow>
                         {isExpanded && items.map((item) => (
                           <TableRow key={item.id} className="hover:bg-muted/50">
                             <TableCell></TableCell>
-                            <TableCell className="pl-8">
-                              <a
-                                href={item.funnel_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary hover:underline inline-flex items-center gap-1"
-                              >
-                                {item.funnel_path || "/"}
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            </TableCell>
-                            <TableCell>{item.brand_name}</TableCell>
+                            <TableCell className="pl-8">{item.brand_name}</TableCell>
                             <TableCell>{formatMonth(item.month)}</TableCell>
                             <TableCell>{item.creatives_count.toLocaleString()}</TableCell>
                             <TableCell>
-                              {item.ads_library_url && (
-                                <a
-                                  href={item.ads_library_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-primary hover:underline text-sm"
-                                >
-                                  View <ExternalLink className="h-3 w-3" />
-                                </a>
-                              )}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(item.funnel_url, '_blank', 'noopener,noreferrer')
+                                }}
+                                className="inline-flex items-center gap-1"
+                              >
+                                View <ExternalLink className="h-3 w-3" />
+                              </Button>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -994,7 +872,7 @@ export function FunnelSummaryTab() {
             </Table>
           </div>
           <div className="mt-4 text-sm text-muted-foreground">
-            Showing {groupedByDomain.length} domains with {dateFilteredData.length} total records
+            Showing {groupedByDomain.length} domains with {displayData.length} total records
           </div>
         </CardContent>
       </Card>
