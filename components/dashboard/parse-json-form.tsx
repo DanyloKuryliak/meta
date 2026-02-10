@@ -8,8 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, Upload, CheckCircle, AlertCircle, FileJson } from "lucide-react"
-import { getSupabaseClient } from "@/lib/supabase"
 import type { Business } from "@/lib/supabase"
+import { useAuth } from "@/components/auth/auth-provider"
 
 type ParseJsonResult = {
   success: boolean
@@ -38,6 +38,7 @@ export function ParseJsonForm({
   onSuccess?: () => void
   businesses?: Business[]
 }) {
+  const { user } = useAuth()
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>("")
   const [brandName, setBrandName] = useState("")
   const [adsLibraryUrl, setAdsLibraryUrl] = useState("")
@@ -45,11 +46,16 @@ export function ParseJsonForm({
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<ParseJsonResult | null>(null)
 
+  const MAX_FILE_SIZE_MB = 4
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
       if (file.type !== "application/json" && !file.name.endsWith(".json")) {
         setResult({ success: false, error: "Please select a JSON file" })
+        return
+      }
+      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+        setResult({ success: false, error: `File too large. Maximum ${MAX_FILE_SIZE_MB}MB. Split your dataset or use a smaller export.` })
         return
       }
       setJsonFile(file)
@@ -119,59 +125,69 @@ export function ParseJsonForm({
       // Update creatives to only valid ones
       creatives = validCreatives
 
-      const supabase = getSupabaseClient()
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      if (!supabaseUrl || !anonKey) throw new Error("Supabase configuration missing")
+      if (!user) {
+        setResult({ success: false, error: "You must be logged in to parse JSON" })
+        setIsLoading(false)
+        return
+      }
 
-      // Call Edge Function to parse JSON
+      // Call our server proxy. Large datasets may take 1–2 minutes.
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 6 * 60 * 1000) // 6 min
       let response: Response
       try {
-        response = await fetch(`${supabaseUrl}/functions/v1/parse_json_creatives`, {
+        response = await fetch("/api/edge/parse-json", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${anonKey}`,
-            "apikey": anonKey,
-          },
+          signal: controller.signal,
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             business_id: selectedBusinessId,
-            creatives: creatives,
+            creatives,
             brand_name: brandName || undefined,
             ads_library_url: adsLibraryUrl || undefined,
           }),
         })
-      } catch (fetchError) {
-        throw new Error(`Network error: ${fetchError instanceof Error ? fetchError.message : "Failed to connect to server"}`)
-      }
-
-      let data: any
-      try {
-        const text = await response.text()
-        if (!text) {
-          throw new Error("Empty response from server")
+      } catch (fetchErr: any) {
+        if (fetchErr?.name === "AbortError") {
+          setResult({ success: false, error: "Request timed out. Try a smaller file (under 4MB) or fewer creatives." })
+          return
         }
-        data = JSON.parse(text)
-      } catch (jsonError) {
-        const text = await response.text().catch(() => "Unable to read response")
-        setResult({ 
-          success: false, 
-          error: `Invalid response (${response.status}): ${text.substring(0, 300)}` 
-        })
-        return
+        throw fetchErr
+      } finally {
+        clearTimeout(timeoutId)
       }
-      
-      if (!response.ok) {
-        setResult({ 
-          success: false, 
-          error: data.error?.message || data.error || `HTTP ${response.status}: ${JSON.stringify(data).substring(0, 300)}` 
-        })
-        return
-      }
-      
-      setResult(data as ParseJsonResult)
 
-      if (data.success) {
+      const text = await response.text().catch(() => "")
+      const parsed = (() => {
+        try {
+          return text ? JSON.parse(text) : null
+        } catch {
+          return null
+        }
+      })()
+
+      if (!response.ok) {
+        const message =
+          parsed?.error?.message ||
+          parsed?.message ||
+          parsed?.error ||
+          (typeof parsed?.error === "string" ? parsed.error : null) ||
+          (text ? text.substring(0, 300) : "Unknown error")
+        setResult({ success: false, error: `HTTP ${response.status}: ${message}` })
+        return
+      }
+
+      if (!parsed) {
+        setResult({
+          success: false,
+          error: `Invalid response (${response.status}): ${text.substring(0, 300)}`,
+        })
+        return
+      }
+
+      setResult(parsed as ParseJsonResult)
+
+      if ((parsed as ParseJsonResult).success) {
         // Clear form on success
         setJsonFile(null)
         setBrandName("")
@@ -204,7 +220,7 @@ export function ParseJsonForm({
           Parse JSON Creatives
         </CardTitle>
         <CardDescription>
-          Upload a JSON file containing creatives for a business. The file should contain an array of creative objects or an object with a "creatives" array property.
+          Upload a JSON file (max 4MB) with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Use <code>test-sample-creatives.json</code> to verify.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -217,7 +233,7 @@ export function ParseJsonForm({
               </SelectTrigger>
               <SelectContent>
                 {businesses.length === 0 ? (
-                  <SelectItem value="" disabled>No businesses available</SelectItem>
+                  <SelectItem value="none" disabled>No businesses available</SelectItem>
                 ) : (
                   businesses.map((business) => (
                     <SelectItem key={business.id} value={business.id}>

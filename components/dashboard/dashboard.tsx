@@ -13,10 +13,25 @@ import { BarChart3, Fuel as Funnel, ChevronRight, ChevronDown, Building2, Plus, 
 import { BusinessManagement } from "./business-management"
 import { useSWRConfig } from "swr"
 import useSWR from "swr"
-import { getSupabaseClient, type Business } from "@/lib/supabase"
-import { Badge } from "@/components/ui/badge"
-import { Switch } from "@/components/ui/switch"
+import { getSupabaseClient } from "@/lib/supabase/client"
+import type { Business } from "@/lib/supabase"
 import { Label } from "@/components/ui/label"
+import { useAuth } from "@/components/auth/auth-provider"
+import { LoginForm } from "@/components/auth/login-form"
+import { LogOut, User } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -26,8 +41,11 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 
-const businessesFetcher = async (): Promise<Business[]> => {
+const businessesFetcher = async (userId: string | null): Promise<Business[]> => {
   const supabase = getSupabaseClient()
+  
+  // RLS policies handle filtering: users see shared businesses OR their own businesses
+  // So we can just query all visible businesses
   const { data, error } = await supabase
     .from("businesses")
     .select("*")
@@ -37,15 +55,52 @@ const businessesFetcher = async (): Promise<Business[]> => {
   return data || []
 }
 
-export function Dashboard() {
+function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<typeof useAuth>['user']>, signOut: () => Promise<void> }) {
   const { mutate } = useSWRConfig()
   const [activeTab, setActiveTab] = useState("creative")
   const [isAddCompetitorOpen, setIsAddCompetitorOpen] = useState(false)
   const [isAddBusinessOpen, setIsAddBusinessOpen] = useState(false)
   const [isParseJsonOpen, setIsParseJsonOpen] = useState(false)
   const [selectedBusinessIds, setSelectedBusinessIds] = useState<Set<string>>(new Set())
+  const [selectedBusinessForBrands, setSelectedBusinessForBrands] = useState<string>("")
   
-  const { data: businesses, error: businessesError } = useSWR("businesses", businessesFetcher)
+  // Now user is guaranteed to exist, so hooks always run
+  const { data: businesses, error: businessesError } = useSWR(
+    `businesses-${user.id}`,
+    () => businessesFetcher(user.id)
+  )
+
+  // Update selectedBusinessIds when dropdown selection changes
+  React.useEffect(() => {
+    if (!businesses) return
+    
+    if (selectedBusinessForBrands && selectedBusinessForBrands !== "all") {
+      // Filter to show only selected business
+      setSelectedBusinessIds(new Set([selectedBusinessForBrands]))
+      mutate("creative-summary")
+      mutate("funnel-summary")
+    } else if (selectedBusinessForBrands === "all") {
+      // Show all businesses
+      setSelectedBusinessIds(new Set(businesses.map(b => b.id)))
+      mutate("creative-summary")
+      mutate("funnel-summary")
+    } else if (!selectedBusinessForBrands || selectedBusinessForBrands === "") {
+      // No selection - show nothing
+      setSelectedBusinessIds(new Set())
+      mutate("creative-summary")
+      mutate("funnel-summary")
+    }
+  }, [selectedBusinessForBrands, businesses, mutate])
+
+  // Auto-refresh data periodically to catch ingestion updates
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      mutate("creative-summary")
+      mutate("funnel-summary")
+    }, 15000) // Refresh every 15 seconds
+
+    return () => clearInterval(interval)
+  }, [mutate])
 
   const handleIngestionSuccess = () => {
     // Refresh both tabs' data after successful ingestion
@@ -65,45 +120,40 @@ export function Dashboard() {
     setIsParseJsonOpen(false)
   }
 
-  const toggleBusiness = (businessId: string) => {
-    setSelectedBusinessIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(businessId)) {
-        next.delete(businessId)
-      } else {
-        next.add(businessId)
-      }
-      // Refresh data when selection changes
-      mutate("creative-summary")
-      mutate("funnel-summary")
-      return next
-    })
-  }
-
-  // Auto-refresh data periodically to catch ingestion updates
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      mutate("creative-summary")
-      mutate("funnel-summary")
-    }, 15000) // Refresh every 15 seconds
-
-    return () => clearInterval(interval)
-  }, [mutate])
-
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border bg-card">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">
-                Meta Creatives Dashboard
-              </h1>
-              <p className="text-muted-foreground mt-1">
-                Analytics for Meta Ads creative and funnel performance
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2 self-start sm:self-auto">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">
+                  Meta Creatives Dashboard
+                </h1>
+                <p className="text-muted-foreground mt-1">
+                  Analytics for Meta Ads creative and funnel performance
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 self-start sm:self-auto items-center">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      <User className="mr-2 h-4 w-4" />
+                      {user.email?.split("@")[0] || "Account"}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={(e) => {
+                        e.preventDefault()
+                        void signOut()
+                      }}
+                    >
+                      <LogOut className="mr-2 h-4 w-4" />
+                      Sign Out
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               <Dialog open={isAddBusinessOpen} onOpenChange={setIsAddBusinessOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline" size="sm">
@@ -136,7 +186,11 @@ export function Dashboard() {
                       Enter a Meta Ads Library URL to track a new competitor's ads and funnels.
                     </DialogDescription>
                   </DialogHeader>
-                  <AddCompetitorForm onSuccess={handleIngestionSuccess} businesses={businesses || []} />
+                  <AddCompetitorForm 
+                    onSuccess={handleIngestionSuccess} 
+                    businesses={businesses || []} 
+                    selectedBusinessForBrands={selectedBusinessForBrands}
+                  />
                 </DialogContent>
               </Dialog>
 
@@ -158,50 +212,33 @@ export function Dashboard() {
                 </DialogContent>
               </Dialog>
             </div>
+            {/* Business Selector for Brands */}
+            {businesses && businesses.length > 0 && (
+              <div className="flex items-center gap-3 pt-2 border-t border-border">
+                <Label htmlFor="business-selector" className="text-sm font-medium whitespace-nowrap">
+                  Select Business:
+                </Label>
+                <Select value={selectedBusinessForBrands || undefined} onValueChange={(value) => setSelectedBusinessForBrands(value === "all" ? "" : value)}>
+                  <SelectTrigger id="business-selector" className="w-[250px] bg-muted border-border">
+                    <SelectValue placeholder="Choose a business to view brands" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Businesses</SelectItem>
+                    {businesses.map((business) => (
+                      <SelectItem key={business.id} value={business.id}>
+                        {business.business_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
+        </div>
         </div>
       </header>
 
       <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Business Toggle Section */}
-        <div className="bg-card border border-border rounded-lg p-4">
-          <div className="flex items-center gap-2 mb-4">
-            <Building2 className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">Select Businesses</h2>
-          </div>
-          {businessesError ? (
-            <p className="text-sm text-destructive">Error loading businesses</p>
-          ) : !businesses || businesses.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No businesses found. Add competitors to create businesses.</p>
-          ) : (
-            <div className="flex flex-wrap gap-3">
-              {businesses.map((business) => (
-                <div key={business.id} className="flex items-center gap-2">
-                  <Switch
-                    id={`business-${business.id}`}
-                    checked={selectedBusinessIds.has(business.id)}
-                    onCheckedChange={() => toggleBusiness(business.id)}
-                  />
-                  <Label
-                    htmlFor={`business-${business.id}`}
-                    className="cursor-pointer flex items-center gap-2"
-                  >
-                    <Badge variant={selectedBusinessIds.has(business.id) ? "default" : "outline"}>
-                      {business.business_name}
-                    </Badge>
-                  </Label>
-                </div>
-              ))}
-            </div>
-          )}
-          {selectedBusinessIds.size === 0 && businesses && businesses.length > 0 && (
-            <p className="text-sm text-muted-foreground mt-3">
-              Toggle businesses above to view competitors. No data will be displayed until at least one business is selected.
-            </p>
-          )}
-        </div>
-
-
         {/* Dashboard Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-6">
@@ -234,4 +271,28 @@ export function Dashboard() {
       </main>
     </div>
   )
+}
+
+export function Dashboard() {
+  const { user, loading: authLoading, signOut } = useAuth()
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-muted-foreground">Loading...</div>
+      </div>
+    )
+  }
+
+  // Show login form if not authenticated
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <LoginForm />
+      </div>
+    )
+  }
+
+  // User is guaranteed to exist here
+  return <DashboardContent user={user} signOut={signOut} />
 }

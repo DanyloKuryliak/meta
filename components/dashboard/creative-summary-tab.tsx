@@ -2,7 +2,8 @@
 
 import { useState, useMemo } from "react"
 import useSWR from "swr"
-import { getSupabaseClient, type BrandCreativeSummary } from "@/lib/supabase"
+import { getSupabaseClient } from "@/lib/supabase/client"
+import type { BrandCreativeSummary } from "@/lib/supabase"
 import {
   Table,
   TableBody,
@@ -308,7 +309,7 @@ const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<Br
   }
   
   // Normalize month format - Supabase returns date as ISO string, convert to YYYY-MM-01
-  const normalized = (data || []).map((row) => {
+  const normalized = (data || []).map((row: BrandCreativeSummary) => {
     let monthStr = row.month
     if (typeof monthStr === "string") {
       // If it's an ISO date string, extract YYYY-MM-DD and ensure it's first of month
@@ -368,6 +369,7 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
           recentMonth: initMonth,
           previousMonth: initMonth,
           percentChangeLabel: "—",
+          growthPercent: 0,
           lastActiveMonth: initMonth,
           monthlyData: [],
           lastSixMonths: [],

@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Loader2, Building2, CheckCircle, AlertCircle } from "lucide-react"
-import { getSupabaseClient } from "@/lib/supabase"
+import { getSupabaseClient } from "@/lib/supabase/client"
+import { useAuth } from "@/components/auth/auth-provider"
 
 type AddBusinessResult = {
   success: boolean
@@ -20,9 +21,24 @@ type AddBusinessResult = {
 }
 
 export function AddBusinessForm({ onSuccess }: { onSuccess?: () => void }) {
+  const { user } = useAuth()
   const [businessName, setBusinessName] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<AddBusinessResult | null>(null)
+
+  const insertBusiness = async (isShared: boolean) => {
+    const supabase = getSupabaseClient()
+    return await supabase
+      .from("businesses")
+      .insert({
+        business_name: businessName.trim(),
+        is_active: true,
+        user_id: user!.id,
+        is_shared: isShared,
+      })
+      .select("id, business_name")
+      .single()
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -36,12 +52,25 @@ export function AddBusinessForm({ onSuccess }: { onSuccess?: () => void }) {
     }
 
     try {
-      const supabase = getSupabaseClient()
-      const { data, error } = await supabase
-        .from("businesses")
-        .insert({ business_name: businessName.trim(), is_active: true })
-        .select("id, business_name")
-        .single()
+      if (!user) {
+        throw new Error("You must be logged in to add a business")
+      }
+
+      // Fast path: create private business (1 request for regular users).
+      // For admins, RLS requires `is_shared = true`, so we retry if the private insert is rejected.
+      let { data, error } = await insertBusiness(false)
+
+      if (error) {
+        const msg = String((error as any)?.message || "")
+        const looksLikeRls =
+          msg.toLowerCase().includes("row-level security") ||
+          msg.toLowerCase().includes("violates row-level security") ||
+          (error as any)?.code === "42501"
+
+        if (looksLikeRls) {
+          ;({ data, error } = await insertBusiness(true))
+        }
+      }
 
       if (error) throw error
 
@@ -93,7 +122,7 @@ export function AddBusinessForm({ onSuccess }: { onSuccess?: () => void }) {
               className="bg-muted border-border"
             />
             <p className="text-xs text-muted-foreground">
-              Enter a name for your Genesis business.
+              Regular users create private businesses. Admins create shared businesses visible to everyone.
             </p>
           </div>
 

@@ -3,7 +3,8 @@
 import React from "react"
 import { useState, useMemo } from "react"
 import useSWR from "swr"
-import { getSupabaseClient, type BrandFunnelSummary } from "@/lib/supabase"
+import { getSupabaseClient } from "@/lib/supabase/client"
+import type { BrandFunnelSummary } from "@/lib/supabase"
 import {
   Table,
   TableBody,
@@ -86,6 +87,34 @@ function monthStartUTC(d: Date): string {
   const y = d.getUTCFullYear()
   const m = String(d.getUTCMonth() + 1).padStart(2, "0")
   return `${y}-${m}-01`
+}
+
+// Shorten URL for display - show domain + truncated path
+function shortenUrl(url: string, maxLength: number = 50): string {
+  try {
+    const urlObj = new URL(url)
+    const domain = urlObj.hostname
+    const path = urlObj.pathname + urlObj.search
+    
+    // If domain alone is longer than maxLength, truncate domain
+    if (domain.length > maxLength) {
+      return domain.substring(0, maxLength - 3) + "..."
+    }
+    
+    const full = domain + path
+    if (full.length <= maxLength) return full
+    
+    // Truncate path to fit
+    const remainingLength = maxLength - domain.length - 3 // 3 for "..."
+    const truncatedPath = path.length > remainingLength 
+      ? path.substring(0, remainingLength) + "..."
+      : path
+    
+    return domain + truncatedPath
+  } catch {
+    // If URL parsing fails, just truncate the string
+    return url.length > maxLength ? url.substring(0, maxLength - 3) + "..." : url
+  }
 }
 
 function parseMonthStart(dateStr: string): Date | null {
@@ -181,7 +210,7 @@ const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<Br
   }
   
   // Normalize month format - Supabase returns date as ISO string, convert to YYYY-MM-01
-  const normalized = (data || []).map((row) => {
+  const normalized = (data || []).map((row: BrandFunnelSummary) => {
     let monthStr = row.month
     if (typeof monthStr === "string") {
       // If it's an ISO date string, extract YYYY-MM-DD and ensure it's first of month
@@ -804,6 +833,7 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
               <TableHeader>
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="w-12"></TableHead>
+                  <TableHead>Domain / Path</TableHead>
                   <TableHead>Brand</TableHead>
                   <TableHead className="cursor-pointer" onClick={() => handleSort("month")}>
                     <div className="flex items-center">Month<SortIcon field="month" /></div>
@@ -817,7 +847,7 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
               <TableBody>
                 {groupedByDomain.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                       No data found. Try adjusting filters or add competitors.
                     </TableCell>
                   </TableRow>
@@ -842,25 +872,43 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
                           <TableCell className="text-muted-foreground">{items.length} paths</TableCell>
                           <TableCell className="text-muted-foreground">{monthDisplay}</TableCell>
                           <TableCell className="font-semibold">{totalCreatives.toLocaleString()}</TableCell>
+                          <TableCell></TableCell>
                         </TableRow>
                         {isExpanded && items.map((item) => (
                           <TableRow key={item.id} className="hover:bg-muted/50">
                             <TableCell></TableCell>
-                            <TableCell className="pl-8">{item.brand_name}</TableCell>
+                            <TableCell className="pl-8 text-sm">
+                              <a
+                                href={item.funnel_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-primary hover:underline cursor-pointer"
+                                title={item.funnel_url}
+                              >
+                                {shortenUrl(item.funnel_url, 50)}
+                              </a>
+                            </TableCell>
+                            <TableCell className="font-medium">{item.brand_name}</TableCell>
                             <TableCell>{formatMonth(item.month)}</TableCell>
                             <TableCell>{item.creatives_count.toLocaleString()}</TableCell>
                             <TableCell>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  window.open(item.funnel_url, '_blank', 'noopener,noreferrer')
-                                }}
-                                className="inline-flex items-center gap-1"
-                              >
-                                View <ExternalLink className="h-3 w-3" />
-                              </Button>
+                              {item.ad_library_url ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    window.open(item.ad_library_url!, '_blank', 'noopener,noreferrer')
+                                  }}
+                                  className="inline-flex items-center gap-1"
+                                  title={item.ad_library_url}
+                                >
+                                  View <ExternalLink className="h-3 w-3" />
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
                             </TableCell>
                           </TableRow>
                         ))}

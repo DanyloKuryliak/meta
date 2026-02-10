@@ -2,7 +2,8 @@
 
 import React, { useState } from "react"
 import useSWR, { useSWRConfig } from "swr"
-import { getSupabaseClient, type Business } from "@/lib/supabase"
+import { getSupabaseClient } from "@/lib/supabase/client"
+import type { Brand, Business } from "@/lib/supabase"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -32,7 +33,7 @@ const businessesFetcher = async (): Promise<Business[]> => {
   return data || []
 }
 
-const brandsFetcher = async (businessId: string) => {
+const brandsFetcher = async (businessId: string): Promise<Brand[]> => {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from("brands")
@@ -162,7 +163,7 @@ function BusinessRow({
   deletingBrandId: string | null
 }) {
   const { mutate: globalMutate } = useSWRConfig()
-  const { data: brands, error: brandsError, mutate: mutateBrands } = useSWR(
+  const { data: brands, error: brandsError, mutate: mutateBrands } = useSWR<Brand[]>(
     `brands-${business.id}`,
     () => brandsFetcher(business.id)
   )

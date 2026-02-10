@@ -2,6 +2,7 @@ import React from "react"
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { SWRProvider } from "@/components/swr-provider"
+import { AuthProvider } from "@/components/auth/auth-provider"
 import './globals.css'
 
 const _geist = Geist({ subsets: ["latin"] });
@@ -39,7 +40,9 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className={`font-sans antialiased`}>
         <SWRProvider>
-          {children}
+          <AuthProvider>
+            {children}
+          </AuthProvider>
         </SWRProvider>
       </body>
     </html>

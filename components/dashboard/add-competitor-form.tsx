@@ -10,8 +10,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, Plus, CheckCircle, AlertCircle } from "lucide-react"
-import { getSupabaseClient } from "@/lib/supabase"
-import type { Business } from "@/lib/supabase"
+import { getSupabaseClient } from "@/lib/supabase/client"
+import type { Business, Brand } from "@/lib/supabase"
+import { useAuth } from "@/components/auth/auth-provider"
+import useSWR from "swr"
 
 type IngestResult = {
   success: boolean
@@ -32,18 +34,40 @@ type IngestResult = {
   }
 }
 
+const brandsFetcher = async (businessId: string): Promise<Brand[]> => {
+  if (!businessId) return []
+  const supabase = getSupabaseClient()
+  const { data, error } = await supabase
+    .from("brands")
+    .select("*")
+    .eq("business_id", businessId)
+    .order("brand_name", { ascending: true })
+  
+  if (error) throw error
+  return data || []
+}
+
 export function AddCompetitorForm({ 
   onSuccess,
-  businesses = []
+  businesses = [],
+  selectedBusinessForBrands = ""
 }: { 
   onSuccess?: () => void
   businesses?: Business[]
+  selectedBusinessForBrands?: string
 }) {
+  const { user } = useAuth()
   const [adsLibraryUrl, setAdsLibraryUrl] = useState("")
   const [brandName, setBrandName] = useState("")
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>("")
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<IngestResult | null>(null)
+  
+  // Fetch brands for the selected business from header
+  const { data: brands, error: brandsError } = useSWR(
+    selectedBusinessForBrands && selectedBusinessForBrands !== "all" ? `brands-${selectedBusinessForBrands}` : null,
+    () => brandsFetcher(selectedBusinessForBrands === "all" ? "" : selectedBusinessForBrands)
+  )
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -56,20 +80,16 @@ export function AddCompetitorForm({
       return
     }
 
-    try {
-      const supabase = getSupabaseClient()
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      if (!supabaseUrl || !anonKey) throw new Error("Supabase configuration missing")
+    if (!user) {
+      setResult({ success: false, error: "You must be logged in to add a competitor" })
+      setIsLoading(false)
+      return
+    }
 
-      // Call Edge Function with authentication
-      const response = await fetch(`${supabaseUrl}/functions/v1/ingest_from_url`, {
+    try {
+      const response = await fetch("/api/edge/ingest-from-url", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${anonKey}`,
-          "apikey": anonKey,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ads_library_url: adsLibraryUrl,
           brand_name: brandName || undefined,
@@ -77,11 +97,19 @@ export function AddCompetitorForm({
         }),
       })
 
+      const text = await response.text().catch(() => "")
+      const parsed = (() => {
+        try {
+          return text ? JSON.parse(text) : null
+        } catch {
+          return null
+        }
+      })()
+
       let data: any
       try {
-        data = await response.json()
+        data = parsed ?? (text ? JSON.parse(text) : null)
       } catch (jsonError) {
-        const text = await response.text()
         setResult({ 
           success: false, 
           error: `Invalid response: ${text.substring(0, 200)}` 
@@ -157,7 +185,7 @@ export function AddCompetitorForm({
               </SelectTrigger>
               <SelectContent>
                 {businesses.length === 0 ? (
-                  <SelectItem value="" disabled>No businesses available</SelectItem>
+                  <SelectItem value="none" disabled>No businesses available</SelectItem>
                 ) : (
                   businesses.map((business) => (
                     <SelectItem key={business.id} value={business.id}>
@@ -171,6 +199,35 @@ export function AddCompetitorForm({
               Select which business this competitor belongs to.
             </p>
           </div>
+
+          {/* Display brands from selected business */}
+          {selectedBusinessForBrands && selectedBusinessForBrands !== "all" && (
+            <div className="space-y-2">
+              <Label>Brands from Selected Business</Label>
+              {brandsError ? (
+                <p className="text-xs text-destructive">Error loading brands</p>
+              ) : brands && brands.length > 0 ? (
+                <div className="border border-border rounded-md p-3 bg-muted/50 max-h-48 overflow-y-auto">
+                  <div className="space-y-1">
+                    {brands.map((brand) => (
+                      <div key={brand.id} className="text-sm py-1 px-2 rounded hover:bg-muted">
+                        <span className="font-medium">{brand.brand_name}</span>
+                        {brand.last_fetch_status && (
+                          <span className={`ml-2 text-xs ${
+                            brand.last_fetch_status === "success" ? "text-green-600" : "text-red-600"
+                          }`}>
+                            ({brand.last_fetch_status})
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">No brands found for this business.</p>
+              )}
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="brand-name">Brand Name (Optional)</Label>
