@@ -3,6 +3,17 @@ import { NextResponse } from 'next/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 
 export async function POST(request: Request) {
+  // Fail fast if env is missing (common in production when SUPABASE_SERVICE_ROLE_KEY not set in Vercel)
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceRoleKey) {
+    console.error('[signup] Missing SUPABASE env vars in production')
+    return NextResponse.json(
+      { error: 'Server misconfigured. Add SUPABASE_SERVICE_ROLE_KEY in Vercel project settings.' },
+      { status: 503 }
+    )
+  }
+
   try {
     const body = await request.json().catch(() => null)
     const email = typeof body?.email === 'string' ? body.email.trim() : ''
@@ -28,21 +39,23 @@ export async function POST(request: Request) {
     })
 
     if (error) {
-      // Avoid leaking internal details; common cases:
-      // - user already exists
       return NextResponse.json({ error: error.message }, { status: 400 })
     }
 
     const userId = data.user?.id
     if (userId) {
-      // Ensure profile row exists (helps admin checks / UI logic)
-      await (admin as any)
+      const { error: profileErr } = await admin
         .from('user_profiles')
         .upsert({ id: userId, is_admin: false }, { onConflict: 'id' })
+      if (profileErr) {
+        console.error('[signup] Failed to create user_profile:', profileErr.message)
+      }
     }
 
     return NextResponse.json({ ok: true }, { status: 200 })
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Signup failed'
+    console.error('[signup]', msg)
     return NextResponse.json({ error: 'Signup failed' }, { status: 500 })
   }
 }
