@@ -149,12 +149,14 @@ export function ParseJsonForm({
       }
 
       // Dynamic batch size: keep each request body under ~3.5MB to avoid 413/limits
-      // Large files (e.g. 150MB) can have big creatives; fixed 350 may exceed limits
+      // Files 15MB+ use smaller batches; very large files (e.g. 150MB) need even more conservative sizing
       const MAX_BATCH_BYTES = 3.5 * 1024 * 1024 // 3.5MB
       const fileSize = jsonFile.size
+      const CHUNK_THRESHOLD = 15 * 1024 * 1024 // 15MB
+      const maxBatch = fileSize >= CHUNK_THRESHOLD ? 150 : 350
       const avgBytesPerCreative = fileSize / creatives.length
-      const sizeBasedBatch = Math.max(20, Math.min(350, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative)))
-      const BATCH_SIZE = Math.min(350, sizeBasedBatch)
+      const sizeBasedBatch = Math.max(20, Math.min(maxBatch, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative)))
+      const BATCH_SIZE = Math.min(maxBatch, sizeBasedBatch)
       const batches: any[][] = []
       for (let i = 0; i < creatives.length; i += BATCH_SIZE) {
         batches.push(creatives.slice(i, i + BATCH_SIZE))
@@ -278,7 +280,7 @@ export function ParseJsonForm({
           Parse JSON Creatives
         </CardTitle>
         <CardDescription>
-          Upload a JSON file with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Large files (100MB+) are processed in smaller chunks automatically.
+          Upload a JSON file with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Large files (15MB+) are processed in smaller chunks automatically.
         </CardDescription>
       </CardHeader>
       <CardContent>
