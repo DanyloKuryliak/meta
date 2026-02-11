@@ -283,6 +283,34 @@ type BrandData = {
   peakMonth?: string
 }
 
+const CHUNK_SIZE = 1000
+
+async function fetchAllCreativeSummaryRows(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  selectedBusinessIds: Set<string>
+): Promise<BrandCreativeSummary[]> {
+  const allRows: BrandCreativeSummary[] = []
+  let offset = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from("brand_creative_summary")
+      .select("*")
+      .not("brand_id", "is", null)
+      .not("brand_name", "is", null)
+      .not("month", "is", null)
+      .not("creatives_count", "is", null)
+      .in("business_id", Array.from(selectedBusinessIds))
+      .order("month", { ascending: false })
+      .range(offset, offset + CHUNK_SIZE - 1)
+    if (error) throw error
+    if (!data?.length) break
+    allRows.push(...(data as BrandCreativeSummary[]))
+    if (data.length < CHUNK_SIZE) break
+    offset += CHUNK_SIZE
+  }
+  return allRows
+}
+
 const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<BrandCreativeSummary[]> => {
   // Return empty array if no businesses are selected
   if (selectedBusinessIds.size === 0) {
@@ -290,23 +318,7 @@ const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<Br
   }
 
   const supabase = getSupabaseClient()
-  let query = supabase
-    .from("brand_creative_summary")
-    .select("*")
-    .not("brand_id", "is", null)
-    .not("brand_name", "is", null)
-    .not("month", "is", null)
-    .not("creatives_count", "is", null)
-  
-  // Filter by selected businesses
-  query = query.in("business_id", Array.from(selectedBusinessIds))
-  
-  const { data, error } = await query.order("month", { ascending: false })
-
-  if (error) {
-    console.error("[Creative Summary] Fetch error:", error)
-    throw error
-  }
+  const data = await fetchAllCreativeSummaryRows(supabase, selectedBusinessIds)
   
   // Normalize month format - Supabase returns date as ISO string, convert to YYYY-MM-01
   const normalized = (data || []).map((row: BrandCreativeSummary) => {
@@ -338,7 +350,7 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
   const [sortField, setSortField] = useState<SortField>("total")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
   const [topBrandsCount, setTopBrandsCount] = useState<number>(5)
-  const [dateFilter, setDateFilter] = useState<"3months" | "6months" | "12months" | "lastmonth">("12months")
+  const [dateFilter, setDateFilter] = useState<"3months" | "6months" | "12months" | "18months" | "24months" | "lastmonth">("12months")
   const [selectedBrandIds, setSelectedBrandIds] = useState<Set<string>>(new Set())
 
 
@@ -431,6 +443,12 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
         break
       case "12months":
         monthsToInclude = 12
+        break
+      case "18months":
+        monthsToInclude = 18
+        break
+      case "24months":
+        monthsToInclude = 24
         break
       case "lastmonth":
         monthsToInclude = 3 // Show 3 months visual, but only last month has data
@@ -798,7 +816,9 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
             <p className="text-xs text-muted-foreground mt-1">
               {dateFilter === "lastmonth" ? "Last month" : 
                dateFilter === "3months" ? "Last 3 months" :
-               dateFilter === "6months" ? "Last 6 months" : "Last 12 months"}
+               dateFilter === "6months" ? "Last 6 months" :
+               dateFilter === "18months" ? "Last 18 months" :
+               dateFilter === "24months" ? "Last 24 months" : "Last 12 months"}
             </p>
           </CardContent>
         </Card>
@@ -983,6 +1003,8 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
               <SelectItem value="3months">Last 3 Months</SelectItem>
               <SelectItem value="6months">Last 6 Months</SelectItem>
               <SelectItem value="12months">Last 12 Months</SelectItem>
+              <SelectItem value="18months">Last 18 Months</SelectItem>
+              <SelectItem value="24months">Last 24 Months</SelectItem>
             </SelectContent>
           </Select>
           <Select value={sortField} onValueChange={(v) => {
@@ -1106,7 +1128,7 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
                       </span>
                       <span 
                         className="text-muted-foreground cursor-help" 
-                        title={`Calculated from consecutive month pairs (e.g., for ${dateFilter === "6months" ? "6 months: means of (1&2), (2&3), (3&4), (4&5), (5&6)" : dateFilter === "3months" ? "3 months: means of (1&2), (2&3)" : "12 months: means of consecutive month pairs"}). Growth rates between pair means are averaged.`}
+                        title={`Calculated from consecutive month pairs. Growth rates between pair means are averaged over the selected period.`}
                       >
                         ℹ️
                       </span>

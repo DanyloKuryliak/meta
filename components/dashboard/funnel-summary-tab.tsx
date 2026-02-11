@@ -182,6 +182,39 @@ const FUNNEL_TYPE_CONFIG: Record<FunnelType, { label: string; color: string; ico
   },
 }
 
+const CHUNK_SIZE = 1000
+
+async function fetchAllFunnelSummaryRows(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  selectedBusinessIds: Set<string>
+): Promise<BrandFunnelSummary[]> {
+  const allRows: BrandFunnelSummary[] = []
+  let offset = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from("brand_funnel_summary")
+      .select("*")
+      .not("brand_name", "is", null)
+      .not("funnel_url", "is", null)
+      .not("funnel_domain", "is", null)
+      .not("month", "is", null)
+      .not("creatives_count", "is", null)
+      .gt("creatives_count", 0)
+      .in("business_id", Array.from(selectedBusinessIds))
+      .order("month", { ascending: false })
+      .range(offset, offset + CHUNK_SIZE - 1)
+    if (error) {
+      console.error("[Funnel Summary] Fetch error:", error)
+      throw error
+    }
+    if (!data?.length) break
+    allRows.push(...(data as BrandFunnelSummary[]))
+    if (data.length < CHUNK_SIZE) break
+    offset += CHUNK_SIZE
+  }
+  return allRows
+}
+
 const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<BrandFunnelSummary[]> => {
   // Return empty array if no businesses are selected
   if (selectedBusinessIds.size === 0) {
@@ -189,25 +222,7 @@ const createFetcher = (selectedBusinessIds: Set<string>) => async (): Promise<Br
   }
 
   const supabase = getSupabaseClient()
-  let query = supabase
-    .from("brand_funnel_summary")
-    .select("*")
-    .not("brand_name", "is", null)
-    .not("funnel_url", "is", null)
-    .not("funnel_domain", "is", null)
-    .not("month", "is", null)
-    .not("creatives_count", "is", null)
-    .gt("creatives_count", 0)
-  
-  // Filter by selected businesses
-  query = query.in("business_id", Array.from(selectedBusinessIds))
-  
-  const { data, error } = await query.order("month", { ascending: false })
-
-  if (error) {
-    console.error("[Funnel Summary] Fetch error:", error)
-    throw error
-  }
+  const data = await fetchAllFunnelSummaryRows(supabase, selectedBusinessIds)
   
   // Normalize month format - Supabase returns date as ISO string, convert to YYYY-MM-01
   const normalized = (data || []).map((row: BrandFunnelSummary) => {
@@ -240,7 +255,7 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
   const [selectedTypes, setSelectedTypes] = useState<FunnelType[]>([])
   const [selectedNiches, setSelectedNiches] = useState<FunnelType[]>([])
   const [brandSearch, setBrandSearch] = useState("")
-  const [dateFilter, setDateFilter] = useState<"lastmonth" | "3months" | "6months" | "12months">("12months")
+  const [dateFilter, setDateFilter] = useState<"lastmonth" | "3months" | "6months" | "12months" | "18months" | "24months">("12months")
   const [trendFilter, setTrendFilter] = useState<"all" | "up" | "down">("all")
   const [sortField, setSortField] = useState<SortField>("creatives_count")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
@@ -278,6 +293,12 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
         break
       case "12months":
         monthsToInclude = 12
+        break
+      case "18months":
+        monthsToInclude = 18
+        break
+      case "24months":
+        monthsToInclude = 24
         break
       case "lastmonth":
         monthsToInclude = 1
@@ -678,6 +699,8 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
                   <SelectItem value="3months">Last 3 Months</SelectItem>
                   <SelectItem value="6months">Last 6 Months</SelectItem>
                   <SelectItem value="12months">Last 12 Months</SelectItem>
+                  <SelectItem value="18months">Last 18 Months</SelectItem>
+                  <SelectItem value="24months">Last 24 Months</SelectItem>
                 </SelectContent>
               </Select>
             </div>

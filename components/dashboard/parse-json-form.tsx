@@ -33,10 +33,14 @@ type ParseJsonResult = {
 
 export function ParseJsonForm({ 
   onSuccess,
-  businesses = []
+  businesses = [],
+  currentUserId = "",
+  isAdmin = false
 }: { 
   onSuccess?: () => void
   businesses?: Business[]
+  currentUserId?: string
+  isAdmin?: boolean
 }) {
   const { user } = useAuth()
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>("")
@@ -77,8 +81,20 @@ export function ParseJsonForm({
     }
 
     try {
+      const fileSizeMB = (jsonFile.size / (1024 * 1024)).toFixed(1)
+      if (jsonFile.size > 200 * 1024 * 1024) {
+        setResult({ success: false, error: "File is over 200MB. Please split into smaller files (e.g. under 100MB each) to avoid browser memory limits." })
+        setIsLoading(false)
+        return
+      }
+
       // Read JSON file
-      const fileContent = await jsonFile.text()
+      let fileContent: string
+      try {
+        fileContent = await jsonFile.text()
+      } catch (readErr) {
+        throw new Error(`Failed to read file (${fileSizeMB}MB). The file may be too large for the browser. Try a smaller file or split it.`)
+      }
       let creatives: any[]
       
       try {
@@ -96,7 +112,11 @@ export function ParseJsonForm({
           throw new Error("JSON must contain an array: top-level [...], or {creatives/data/items: [...]}")
         }
       } catch (parseError) {
-        throw new Error(`Invalid JSON format: ${parseError instanceof Error ? parseError.message : "Unknown error"}`)
+        const msg = parseError instanceof Error ? parseError.message : "Unknown error"
+        const hint = jsonFile.size > 50 * 1024 * 1024
+          ? " Large files can cause memory issues. Try splitting into smaller files."
+          : ""
+        throw new Error(`Invalid JSON format: ${msg}${hint}`)
       }
 
       if (creatives.length === 0) {
@@ -128,22 +148,82 @@ export function ParseJsonForm({
         return
       }
 
-      // Call our server proxy. Large datasets may take 1–2 minutes.
+      // Dynamic batch size: keep each request body under ~3.5MB to avoid 413/limits
+      // Large files (e.g. 150MB) can have big creatives; fixed 350 may exceed limits
+      const MAX_BATCH_BYTES = 3.5 * 1024 * 1024 // 3.5MB
+      const fileSize = jsonFile.size
+      const avgBytesPerCreative = fileSize / creatives.length
+      const sizeBasedBatch = Math.max(20, Math.min(350, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative)))
+      const BATCH_SIZE = Math.min(350, sizeBasedBatch)
+      const batches: any[][] = []
+      for (let i = 0; i < creatives.length; i += BATCH_SIZE) {
+        batches.push(creatives.slice(i, i + BATCH_SIZE))
+      }
+
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 6 * 60 * 1000) // 6 min
-      let response: Response
+      const timeoutId = setTimeout(() => controller.abort(), 6 * 60 * 1000)
+      let lastParsed: ParseJsonResult | null = null
+
       try {
-        response = await fetch("/api/edge/parse-json", {
-          method: "POST",
-          signal: controller.signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        for (let i = 0; i < batches.length; i++) {
+          const batch = batches[i]
+          const isLast = i === batches.length - 1
+          const body: Record<string, unknown> = {
             business_id: businessId,
-            creatives,
-            brand_name: brandName || undefined,
-            ads_library_url: adsLibraryUrl || undefined,
-          }),
-        })
+            creatives: batch,
+            is_last_batch: isLast,
+          }
+          if (lastParsed?.brand?.id) {
+            body.brand_id = lastParsed.brand.id
+          } else {
+            if (brandName) body.brand_name = brandName
+            if (adsLibraryUrl) body.ads_library_url = adsLibraryUrl
+          }
+
+          const response = await fetch("/api/edge/parse-json", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          })
+
+          const text = await response.text().catch(() => "")
+          const parsed = (() => {
+            try {
+              return text ? JSON.parse(text) : null
+            } catch {
+              return null
+            }
+          })()
+
+          if (!response.ok) {
+            const message =
+              parsed?.error?.message ||
+              parsed?.message ||
+              parsed?.error ||
+              (typeof parsed?.error === "string" ? parsed.error : null) ||
+              (text ? text.substring(0, 300) : "Unknown error")
+            const hint = response.status === 413
+              ? " Request too large. The parser uses smaller batches for big files; try again or split your file."
+              : ""
+            setResult({ success: false, error: `HTTP ${response.status}: ${message}${hint}` })
+            return
+          }
+
+          if (!parsed) {
+            setResult({
+              success: false,
+              error: `Invalid response (${response.status}): ${text.substring(0, 300)}`,
+            })
+            return
+          }
+
+          lastParsed = parsed as ParseJsonResult
+          if (!lastParsed.success) {
+            setResult(lastParsed)
+            return
+          }
+        }
       } catch (fetchErr: any) {
         if (fetchErr?.name === "AbortError") {
           setResult({ success: false, error: "Request timed out. Try a smaller file or fewer creatives." })
@@ -154,37 +234,18 @@ export function ParseJsonForm({
         clearTimeout(timeoutId)
       }
 
-      const text = await response.text().catch(() => "")
-      const parsed = (() => {
-        try {
-          return text ? JSON.parse(text) : null
-        } catch {
-          return null
+      if (lastParsed) {
+        const totalReceived = creatives.length
+        const agg = {
+          ...lastParsed,
+          ingestion: lastParsed.ingestion
+            ? { ...lastParsed.ingestion, received: totalReceived }
+            : undefined,
         }
-      })()
-
-      if (!response.ok) {
-        const message =
-          parsed?.error?.message ||
-          parsed?.message ||
-          parsed?.error ||
-          (typeof parsed?.error === "string" ? parsed.error : null) ||
-          (text ? text.substring(0, 300) : "Unknown error")
-        setResult({ success: false, error: `HTTP ${response.status}: ${message}` })
-        return
+        setResult(agg)
       }
 
-      if (!parsed) {
-        setResult({
-          success: false,
-          error: `Invalid response (${response.status}): ${text.substring(0, 300)}`,
-        })
-        return
-      }
-
-      setResult(parsed as ParseJsonResult)
-
-      if ((parsed as ParseJsonResult).success) {
+      if (lastParsed?.success && lastParsed !== undefined) {
         // Clear form on success
         setJsonFile(null)
         setBrandName("")
@@ -217,7 +278,7 @@ export function ParseJsonForm({
           Parse JSON Creatives
         </CardTitle>
         <CardDescription>
-          Upload a JSON file with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Use <code>test-sample-creatives.json</code> to verify.
+          Upload a JSON file with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Large files (100MB+) are processed in smaller chunks automatically.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -232,16 +293,32 @@ export function ParseJsonForm({
                 {businesses.length === 0 ? (
                   <SelectItem value="none" disabled>No businesses available</SelectItem>
                 ) : (
-                  businesses.map((business) => (
-                    <SelectItem key={business.id} value={business.id}>
-                      {business.business_name}
-                    </SelectItem>
-                  ))
+                  businesses.map((business) => {
+                    const isOwner = business.user_id === currentUserId
+                    const isShared = Boolean(business.is_shared)
+                    const canAdd = isAdmin ? isShared : isOwner
+                    const label = isAdmin
+                      ? business.business_name
+                      : isOwner
+                        ? `${business.business_name} (Yours)`
+                        : isShared
+                          ? `${business.business_name} (Shared)`
+                          : business.business_name
+                    return (
+                      <SelectItem 
+                        key={business.id} 
+                        value={business.id}
+                        disabled={!canAdd}
+                      >
+                        {label}
+                      </SelectItem>
+                    )
+                  })
                 )}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Select which business these creatives belong to.
+              {isAdmin ? "As admin (host), you parse into shared businesses only." : "You can only parse into businesses you created (Yours)."}
             </p>
           </div>
 

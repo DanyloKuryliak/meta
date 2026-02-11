@@ -50,11 +50,15 @@ const brandsFetcher = async (businessId: string): Promise<Brand[]> => {
 export function AddCompetitorForm({ 
   onSuccess,
   businesses = [],
-  selectedBusinessForBrands = ""
+  selectedBusinessForBrands = "",
+  currentUserId = "",
+  isAdmin = false
 }: { 
   onSuccess?: () => void
   businesses?: Business[]
   selectedBusinessForBrands?: string
+  currentUserId?: string
+  isAdmin?: boolean
 }) {
   const { user } = useAuth()
   const [adsLibraryUrl, setAdsLibraryUrl] = useState("")
@@ -179,7 +183,11 @@ export function AddCompetitorForm({
 
           <div className="space-y-2">
             <Label htmlFor="business-select">Business *</Label>
-            <Select value={selectedBusinessId} onValueChange={setSelectedBusinessId} required>
+            <Select 
+              value={selectedBusinessId} 
+              onValueChange={setSelectedBusinessId} 
+              required
+            >
               <SelectTrigger id="business-select" className="bg-muted border-border">
                 <SelectValue placeholder="Select a business" />
               </SelectTrigger>
@@ -187,16 +195,32 @@ export function AddCompetitorForm({
                 {businesses.length === 0 ? (
                   <SelectItem value="none" disabled>No businesses available</SelectItem>
                 ) : (
-                  businesses.map((business) => (
-                    <SelectItem key={business.id} value={business.id}>
-                      {business.business_name}
-                    </SelectItem>
-                  ))
+                  businesses.map((business) => {
+                    const isOwner = business.user_id === currentUserId
+                    const isShared = Boolean(business.is_shared)
+                    const canAdd = isAdmin ? isShared : isOwner
+                    const label = isAdmin
+                      ? business.business_name
+                      : isOwner
+                        ? `${business.business_name} (Yours)`
+                        : isShared
+                          ? `${business.business_name} (Shared)`
+                          : business.business_name
+                    return (
+                      <SelectItem 
+                        key={business.id} 
+                        value={business.id} 
+                        disabled={!canAdd}
+                      >
+                        {label}
+                      </SelectItem>
+                    )
+                  })
                 )}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Select which business this competitor belongs to.
+              {isAdmin ? "As admin (host), you add competitors to shared businesses only." : "You can only add competitors to businesses you created (Yours)."}
             </p>
           </div>
 

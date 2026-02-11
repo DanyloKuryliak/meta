@@ -34,14 +34,17 @@ function transformCreativeToRaw(creative: any, brandId: string) {
 
   let linkUrl = snapshot.link_url || null
   if (!linkUrl && snapshot.cards?.length) linkUrl = snapshot.cards[0]?.link_url || null
-  const caption = snapshot.caption || null
+  let caption = snapshot.caption || null
+  if (typeof caption === "string" && caption.length > 32000) caption = caption.slice(0, 32000)
+  if (typeof linkUrl === "string" && linkUrl.length > 2048) linkUrl = linkUrl.slice(0, 2048)
   const pageName = snapshot.page_name || creative.page_name || null
   const pageId = String(snapshot.page_id || creative.page_id || "")
   let adArchiveId = String(creative.ad_archive_id || creative.id || "")
   if (!adArchiveId || adArchiveId === "undefined" || adArchiveId === "null") {
     adArchiveId = crypto.randomUUID()
   }
-  const adLibraryUrl = creative.url || creative.ad_library_url || null
+  let adLibraryUrl = creative.url || creative.ad_library_url || null
+  if (typeof adLibraryUrl === "string" && adLibraryUrl.length > 2048) adLibraryUrl = adLibraryUrl.slice(0, 2048)
 
   return {
     id: adArchiveId,
@@ -98,6 +101,8 @@ export async function POST(request: NextRequest) {
   const creatives = Array.isArray(body?.creatives) ? body.creatives : null
   const brand_name = typeof body?.brand_name === "string" ? body.brand_name : undefined
   const ads_library_url = typeof body?.ads_library_url === "string" ? body.ads_library_url : undefined
+  const brand_id_param = typeof body?.brand_id === "string" ? body.brand_id.trim() : undefined
+  const is_last_batch = body?.is_last_batch === true
 
   if (!business_id || business_id === "none") {
     const res = NextResponse.json(
@@ -136,7 +141,6 @@ export async function POST(request: NextRequest) {
     return res
   }
 
-  // Parse logic inlined – no Edge Function call
   const firstCreative = creatives[0]
   const pageNames = creatives
     .map((c: any) => c.snapshot?.page_name || c.page_name)
@@ -148,12 +152,19 @@ export async function POST(request: NextRequest) {
     extractedBrandName = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || pageNames[0]
   }
   const finalBrandName = (extractedBrandName || "Unknown Brand").trim().slice(0, 120)
-
-  const firstAdLibraryUrl = firstCreative.url || firstCreative.ad_library_url || null
+  const firstAdLibraryUrl = firstCreative?.url || firstCreative?.ad_library_url || null
   const brandIdentifier = ads_library_url || firstAdLibraryUrl || null
 
   let brand_id: string
-  if (!brandIdentifier) {
+  if (brand_id_param) {
+    const { data: existingBrand } = await admin.from("brands").select("id, brand_name, business_id").eq("id", brand_id_param).eq("business_id", business_id).maybeSingle()
+    if (!existingBrand) {
+      const res = NextResponse.json({ error: "Brand not found or does not belong to business" }, { status: 404 })
+      cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
+      return res
+    }
+    brand_id = existingBrand.id
+  } else if (!brandIdentifier) {
     const { data: existing } = await admin
       .from("brands")
       .select("id")
@@ -202,9 +213,15 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const rows = creatives
+  let rows = creatives
     .filter((c: any) => c && (c.ad_archive_id || c.id) && !c.errorCode && !c.error)
     .map((c: any) => transformCreativeToRaw(c, brand_id))
+    .filter((r) => r.ad_archive_id?.trim())
+
+  // Deduplicate by ad_archive_id: ON CONFLICT fails if the same id appears twice in one batch
+  const byAdArchiveId = new Map<string, typeof rows[0]>()
+  for (const r of rows) byAdArchiveId.set(r.ad_archive_id, r)
+  rows = Array.from(byAdArchiveId.values())
 
   if (rows.length === 0) {
     const res = NextResponse.json({
@@ -217,13 +234,20 @@ export async function POST(request: NextRequest) {
     return res
   }
 
-  const BATCH_SIZE = 500
+  const BATCH_SIZE = 100
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, i + BATCH_SIZE).filter((r) => r.ad_archive_id?.trim())
-    if (batch.length && (await admin.from("raw_data").upsert(batch, { onConflict: "ad_archive_id" })).error) {
-      const res = NextResponse.json({ success: false, error: "Failed to insert creatives" }, { status: 500 })
-      cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
-      return res
+    const batch = rows.slice(i, i + BATCH_SIZE)
+    if (batch.length) {
+      const { error } = await admin.from("raw_data").upsert(batch, { onConflict: "ad_archive_id" })
+      if (error) {
+        const msg = error.message || String(error)
+        const res = NextResponse.json(
+          { success: false, error: `Failed to insert creatives: ${msg}` },
+          { status: 500 }
+        )
+        cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
+        return res
+      }
     }
   }
 
@@ -235,19 +259,21 @@ export async function POST(request: NextRequest) {
   }).eq("id", brand_id)
 
   let summaryResult = { creative: 0, funnel: 0 }
-  try {
-    const summaryRes = await fetch(`${url}/functions/v1/populate_summaries`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: anonKey, Authorization: `Bearer ${serviceRoleKey}` },
-      body: JSON.stringify({ brand_id, business_id }),
-    })
-    const sd = await summaryRes.json().catch(() => ({}))
-    summaryResult = { creative: sd.creative || 0, funnel: sd.funnel || 0 }
-  } catch (_) {}
+  if (is_last_batch) {
+    try {
+      const summaryRes = await fetch(`${url}/functions/v1/populate_summaries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: anonKey, Authorization: `Bearer ${serviceRoleKey}` },
+        body: JSON.stringify({ brand_id, business_id }),
+      })
+      const sd = await summaryRes.json().catch(() => ({}))
+      summaryResult = { creative: sd.creative || 0, funnel: sd.funnel || 0 }
+    } catch (_) {}
+  }
 
   const payload = {
     success: true,
-    message: "JSON parsing completed successfully",
+    message: brand_id_param ? "Batch imported" : "JSON parsing completed successfully",
     brand: { id: brand_id, brand_name: finalBrandName },
     ingestion: {
       received: creatives.length,

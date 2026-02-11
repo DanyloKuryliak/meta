@@ -20,7 +20,7 @@ type AddBusinessResult = {
   }
 }
 
-export function AddBusinessForm({ onSuccess }: { onSuccess?: () => void }) {
+export function AddBusinessForm({ onSuccess, isAdmin = false }: { onSuccess?: () => void; isAdmin?: boolean }) {
   const { user } = useAuth()
   const [businessName, setBusinessName] = useState("")
   const [isLoading, setIsLoading] = useState(false)
@@ -56,21 +56,8 @@ export function AddBusinessForm({ onSuccess }: { onSuccess?: () => void }) {
         throw new Error("You must be logged in to add a business")
       }
 
-      // Fast path: create private business (1 request for regular users).
-      // For admins, RLS requires `is_shared = true`, so we retry if the private insert is rejected.
-      let { data, error } = await insertBusiness(false)
-
-      if (error) {
-        const msg = String((error as any)?.message || "")
-        const looksLikeRls =
-          msg.toLowerCase().includes("row-level security") ||
-          msg.toLowerCase().includes("violates row-level security") ||
-          (error as any)?.code === "42501"
-
-        if (looksLikeRls) {
-          ;({ data, error } = await insertBusiness(true))
-        }
-      }
+      // Admin (host) creates shared businesses only. Regular users create private (yours).
+      const { data, error } = await insertBusiness(isAdmin)
 
       if (error) throw error
 
@@ -122,7 +109,7 @@ export function AddBusinessForm({ onSuccess }: { onSuccess?: () => void }) {
               className="bg-muted border-border"
             />
             <p className="text-xs text-muted-foreground">
-              Regular users create private businesses. Admins create shared businesses visible to everyone.
+              {isAdmin ? "As admin (host), you create shared businesses visible to all users." : "You create private businesses (yours); only you can add competitors to them."}
             </p>
           </div>
 

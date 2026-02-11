@@ -45,7 +45,6 @@ const businessesFetcher = async (userId: string | null): Promise<Business[]> => 
   const supabase = getSupabaseClient()
   
   // RLS policies handle filtering: users see shared businesses OR their own businesses
-  // So we can just query all visible businesses
   const { data, error } = await supabase
     .from("businesses")
     .select("*")
@@ -53,6 +52,16 @@ const businessesFetcher = async (userId: string | null): Promise<Business[]> => 
   
   if (error) throw error
   return data || []
+}
+
+const isAdminFetcher = async (userId: string): Promise<boolean> => {
+  const supabase = getSupabaseClient()
+  const { data } = await supabase
+    .from("user_profiles")
+    .select("is_admin")
+    .eq("id", userId)
+    .maybeSingle()
+  return (data as { is_admin?: boolean } | null)?.is_admin === true
 }
 
 function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<typeof useAuth>['user']>, signOut: () => Promise<void> }) {
@@ -64,10 +73,13 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
   const [selectedBusinessIds, setSelectedBusinessIds] = useState<Set<string>>(new Set())
   const [selectedBusinessForBrands, setSelectedBusinessForBrands] = useState<string>("")
   
-  // Now user is guaranteed to exist, so hooks always run
   const { data: businesses, error: businessesError } = useSWR(
     `businesses-${user.id}`,
     () => businessesFetcher(user.id)
+  )
+  const { data: isAdmin } = useSWR(
+    `isAdmin-${user.id}`,
+    () => isAdminFetcher(user.id)
   )
 
   // Update selectedBusinessIds when dropdown selection changes
@@ -99,14 +111,15 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
   }, [mutate])
 
   const handleIngestionSuccess = () => {
-    // Refresh both tabs' data after successful ingestion
     mutate("creative-summary")
     mutate("funnel-summary")
     mutate("businesses")
+    mutate(`businesses-${user.id}`)
   }
 
   const handleBusinessAdded = () => {
     mutate("businesses")
+    mutate(`businesses-${user.id}`)
     setIsAddBusinessOpen(false)
   }
 
@@ -164,7 +177,7 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
                       Create a new Genesis business to organize competitors.
                     </DialogDescription>
                   </DialogHeader>
-                  <AddBusinessForm onSuccess={handleBusinessAdded} />
+                  <AddBusinessForm onSuccess={handleBusinessAdded} isAdmin={isAdmin ?? false} />
                 </DialogContent>
               </Dialog>
 
@@ -186,6 +199,8 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
                     onSuccess={handleIngestionSuccess} 
                     businesses={businesses || []} 
                     selectedBusinessForBrands={selectedBusinessForBrands}
+                    currentUserId={user.id}
+                    isAdmin={isAdmin ?? false}
                   />
                 </DialogContent>
               </Dialog>
@@ -204,13 +219,19 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
                       Upload a JSON file containing creatives for a business.
                     </DialogDescription>
                   </DialogHeader>
-                  <ParseJsonForm onSuccess={handleJsonParsed} businesses={businesses || []} />
+                  <ParseJsonForm 
+                    onSuccess={handleJsonParsed} 
+                    businesses={businesses || []}
+                    currentUserId={user.id}
+                    isAdmin={isAdmin ?? false}
+                  />
                 </DialogContent>
               </Dialog>
             </div>
             {/* Business Selector for Brands */}
             {businesses && businesses.length > 0 && (
-              <div className="flex items-center gap-3 pt-2 border-t border-border">
+              <div className="flex flex-col gap-2 pt-2 border-t border-border">
+                <div className="flex items-center gap-3">
                 <Label htmlFor="business-selector" className="text-sm font-medium whitespace-nowrap">
                   Select Business:
                 </Label>
@@ -219,13 +240,28 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
                     <SelectValue placeholder="Choose a business to view brands" />
                   </SelectTrigger>
                   <SelectContent>
-                    {businesses.map((business) => (
-                      <SelectItem key={business.id} value={business.id}>
-                        {business.business_name}
-                      </SelectItem>
-                    ))}
+                    {businesses.map((business) => {
+                      const isOwner = business.user_id === user.id
+                      const isShared = Boolean(business.is_shared)
+                      const label = isAdmin
+                        ? business.business_name
+                        : isOwner
+                          ? `${business.business_name} (Yours)`
+                          : isShared
+                            ? `${business.business_name} (Shared)`
+                            : business.business_name
+                      return (
+                        <SelectItem key={business.id} value={business.id}>
+                          {label}
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {isAdmin ? "As admin (host), you manage shared businesses. You can add competitors and parse JSON to any." : <><strong>(Yours)</strong> — businesses you created; you can add competitors and parse JSON. <strong>(Shared)</strong> — admin-created; view only, you cannot modify.</>}
+                </p>
               </div>
             )}
           </div>
