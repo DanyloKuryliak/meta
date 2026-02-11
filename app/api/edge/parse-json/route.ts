@@ -11,6 +11,18 @@ function formatDate(d: Date | string): string {
   return d.toISOString().split("T")[0]
 }
 
+/** Normalize brand name for matching: "Learna AI: Language Learning" and "Learna AI" → same key. */
+function normalizeBrandName(name: string): string {
+  if (!name || typeof name !== "string") return ""
+  const s = name.trim()
+  const colon = s.indexOf(":")
+  const dash2 = s.indexOf(" - ")
+  const enDash = s.indexOf(" – ")
+  const cut = [colon, dash2, enDash].filter((i) => i > 0)
+  const end = cut.length ? Math.min(...cut) : s.length
+  return s.slice(0, end).trim().toLowerCase()
+}
+
 function transformCreativeToRaw(creative: any, brandId: string) {
   const snapshot = creative.snapshot || {}
   let startDate: Date | null = null
@@ -155,7 +167,10 @@ export async function POST(request: NextRequest) {
   const firstAdLibraryUrl = firstCreative?.url || firstCreative?.ad_library_url || null
   const brandIdentifier = ads_library_url || firstAdLibraryUrl || null
 
+  const targetNormalized = normalizeBrandName(finalBrandName)
+
   let brand_id: string
+  let displayBrandName = finalBrandName
   if (brand_id_param) {
     const { data: existingBrand } = await admin.from("brands").select("id, brand_name, business_id").eq("id", brand_id_param).eq("business_id", business_id).maybeSingle()
     if (!existingBrand) {
@@ -164,17 +179,17 @@ export async function POST(request: NextRequest) {
       return res
     }
     brand_id = existingBrand.id
-  } else if (!brandIdentifier) {
-    const { data: existing } = await admin
-      .from("brands")
-      .select("id")
-      .eq("business_id", business_id)
-      .eq("brand_name", finalBrandName)
-      .maybeSingle()
-    if (existing?.id) {
-      brand_id = existing.id
-      await admin.from("brands").update({ brand_name: finalBrandName, is_active: true, user_id: user.id }).eq("id", brand_id)
-    } else {
+    displayBrandName = (existingBrand as { brand_name?: string }).brand_name ?? finalBrandName
+  } else {
+    const { data: businessBrands } = await admin.from("brands").select("id, brand_name").eq("business_id", business_id)
+    const matchByNormalized = (businessBrands as { id: string; brand_name: string }[] | null)?.find(
+      (b) => normalizeBrandName(b.brand_name) === targetNormalized
+    )
+    if (matchByNormalized?.id) {
+      brand_id = matchByNormalized.id
+      displayBrandName = matchByNormalized.brand_name
+      await admin.from("brands").update({ is_active: true, user_id: user.id }).eq("id", brand_id)
+    } else if (!brandIdentifier) {
       brand_id = crypto.randomUUID()
       const { error: err } = await admin.from("brands").insert({
         id: brand_id,
@@ -189,26 +204,26 @@ export async function POST(request: NextRequest) {
         cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
         return res
       }
-    }
-  } else {
-    const { data: existing } = await admin.from("brands").select("id").eq("ads_library_url", brandIdentifier).maybeSingle()
-    if (existing?.id) {
-      brand_id = existing.id
-      await admin.from("brands").update({ brand_name: finalBrandName, is_active: true, business_id, user_id: user.id }).eq("id", brand_id)
     } else {
-      brand_id = crypto.randomUUID()
-      const { error: err } = await admin.from("brands").insert({
-        id: brand_id,
-        brand_name: finalBrandName,
-        ads_library_url: brandIdentifier,
-        is_active: true,
-        business_id,
-        user_id: user.id,
-      }).select("id").single()
-      if (err) {
-        const res = NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 })
-        cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
-        return res
+      const { data: existingByUrl } = await admin.from("brands").select("id").eq("ads_library_url", brandIdentifier).maybeSingle()
+      if (existingByUrl?.id) {
+        brand_id = existingByUrl.id
+        await admin.from("brands").update({ brand_name: finalBrandName, is_active: true, business_id, user_id: user.id }).eq("id", brand_id)
+      } else {
+        brand_id = crypto.randomUUID()
+        const { error: err } = await admin.from("brands").insert({
+          id: brand_id,
+          brand_name: finalBrandName,
+          ads_library_url: brandIdentifier,
+          is_active: true,
+          business_id,
+          user_id: user.id,
+        }).select("id").single()
+        if (err) {
+          const res = NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 })
+          cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
+          return res
+        }
       }
     }
   }
@@ -227,7 +242,7 @@ export async function POST(request: NextRequest) {
     const res = NextResponse.json({
       success: false,
       error: "No valid creatives. Need ad_archive_id or id.",
-      brand: { id: brand_id, brand_name: finalBrandName },
+      brand: { id: brand_id, brand_name: displayBrandName },
       ingestion: { received: creatives.length, inserted: 0 },
     }, { status: 400 })
     cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
@@ -274,7 +289,7 @@ export async function POST(request: NextRequest) {
   const payload = {
     success: true,
     message: brand_id_param ? "Batch imported" : "JSON parsing completed successfully",
-    brand: { id: brand_id, brand_name: finalBrandName },
+    brand: { id: brand_id, brand_name: displayBrandName },
     ingestion: {
       received: creatives.length,
       inserted: count ?? 0,

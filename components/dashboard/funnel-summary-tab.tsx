@@ -595,16 +595,34 @@ export function FunnelSummaryTab({ selectedBusinessIds = new Set() }: { selected
   }, [displayData, topDomainsCount])
 
   const exportCSV = () => {
-    const headers = ["Brand Name", "Domain", "Full URL", "Month", "Creatives Count"]
-    const rows = displayData.map((item) => [
-      item.brand_name,
-      item.funnel_domain,
-      item.funnel_url,
-      formatMonth(item.month),
-      item.creatives_count,
-    ])
-    const csv = [headers, ...rows].map((row) => row.join(",")).join("\n")
-    const blob = new Blob([csv], { type: "text/csv" })
+    const allMonths = [...new Set(displayData.map((d) => d.month))].sort()
+    const keyed: Record<string, { brand_name: string; funnel_domain: string; funnel_url: string; months: Record<string, number> }> = {}
+    displayData.forEach((item) => {
+      const key = `${item.brand_name}\t${item.funnel_domain}\t${item.funnel_url || ""}`
+      if (!keyed[key]) {
+        keyed[key] = {
+          brand_name: item.brand_name,
+          funnel_domain: item.funnel_domain,
+          funnel_url: item.funnel_url || "",
+          months: {},
+        }
+      }
+      const prev = keyed[key].months[item.month] || 0
+      keyed[key].months[item.month] = prev + item.creatives_count
+    })
+    const escapeCSV = (val: unknown) => {
+      const s = String(val)
+      if (s.includes(",") || s.includes('"') || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`
+      return s
+    }
+    const headers = ["Brand Name", "Domain", "Full URL", ...allMonths.map((m) => formatMonth(m)), "Total"]
+    const rows = Object.values(keyed).map((row) => {
+      const monthValues = allMonths.map((m) => row.months[m] ?? 0)
+      const total = monthValues.reduce((sum, n) => sum + n, 0)
+      return [row.brand_name, row.funnel_domain, row.funnel_url, ...monthValues, total]
+    })
+    const csv = [headers.map(escapeCSV), ...rows.map((r) => r.map(escapeCSV))].map((r) => r.join(",")).join("\n")
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url

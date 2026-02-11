@@ -50,7 +50,15 @@ export async function middleware(request: NextRequest) {
   // This refreshes the session cookie if needed.
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser()
+
+  if (authError) {
+    const nextUrl = request.nextUrl.clone()
+    nextUrl.pathname = '/auth/login'
+    if (pathname !== '/auth/login') nextUrl.searchParams.set('next', pathname)
+    return NextResponse.redirect(nextUrl)
+  }
 
   const isAuthRoute = pathname.startsWith('/auth')
   const isCallbackRoute = pathname.startsWith('/auth/callback')

@@ -29,7 +29,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initializeAuth = async () => {
       const { data: { session }, error } = await supabase.auth.getSession()
       if (error) {
-        console.error('Error getting session:', error)
+        const msg = error?.message ?? ''
+        const isRefreshTokenError = /refresh\s*token|invalid\s*refresh|token\s*not\s*found/i.test(msg)
+        if (isRefreshTokenError) {
+          await supabase.auth.signOut()
+          setUser(null)
+        } else {
+          console.error('Error getting session:', error)
+        }
       }
       setUser(session?.user ?? null)
       setLoading(false)

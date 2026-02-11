@@ -742,23 +742,13 @@ export function CreativeSummaryTab({ selectedBusinessIds = new Set() }: { select
         .reduce((sum, m) => sum + m.count, 0)
     }
 
-    // Build CSV rows — Brand Name = Player (column A)
-    const headers = [
-      'Brand Name',
-      'Ads Library Link',
-      ...exportMonths,
-      'Total'
-    ]
+    // Build CSV rows: Brand Name, then monthly columns, then Total (no Ads Library Link)
+    const headers = ['Brand Name', ...exportMonths, 'Total']
 
     const rows = filteredBrands.map(brand => {
-      const monthlyValues = exportMonths.map(m => brandMonthlyData[brand.brand_id]?.[m] || 0)
+      const monthlyValues = exportMonths.map(m => brandMonthlyData[brand.brand_id]?.[m] ?? 0)
       const total = calculateFilteredTotal(brand)
-
-      return [
-        brand.brand_name,
-        ...monthlyValues,
-        total
-      ]
+      return [brand.brand_name, ...monthlyValues, total]
     })
 
     // Escape CSV values

@@ -148,14 +148,15 @@ export function ParseJsonForm({
         return
       }
 
-      // Dynamic batch size: keep each request body under ~3.5MB to avoid 413/limits
-      // Files 15MB+ use smaller batches; very large files (e.g. 150MB) need even more conservative sizing
-      const MAX_BATCH_BYTES = 3.5 * 1024 * 1024 // 3.5MB
+      // Keep each request body well under platform limit (~4.5MB) to avoid 413 FUNCTION_PAYLOAD_TOO_LARGE
+      const MAX_BATCH_BYTES = 1.8 * 1024 * 1024 // 1.8MB per request (safe for Vercel/edge)
       const fileSize = jsonFile.size
-      const CHUNK_THRESHOLD = 15 * 1024 * 1024 // 15MB
-      const maxBatch = fileSize >= CHUNK_THRESHOLD ? 150 : 350
+      const CHUNK_15MB = 15 * 1024 * 1024
+      const CHUNK_50MB = 50 * 1024 * 1024
+      const maxBatch =
+        fileSize >= CHUNK_50MB ? 50 : fileSize >= CHUNK_15MB ? 80 : 200
       const avgBytesPerCreative = fileSize / creatives.length
-      const sizeBasedBatch = Math.max(20, Math.min(maxBatch, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative)))
+      const sizeBasedBatch = Math.max(15, Math.min(maxBatch, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative)))
       const BATCH_SIZE = Math.min(maxBatch, sizeBasedBatch)
       const batches: any[][] = []
       for (let i = 0; i < creatives.length; i += BATCH_SIZE) {
@@ -165,66 +166,81 @@ export function ParseJsonForm({
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 6 * 60 * 1000)
       let lastParsed: ParseJsonResult | null = null
+      const PAYLOAD_LIMIT = Math.floor(MAX_BATCH_BYTES) // bytes; stay under platform 413 limit
+
+      const sendBatch = async (batch: any[], isLastBatch: boolean): Promise<ParseJsonResult | null> => {
+        const body: Record<string, unknown> = {
+          business_id: businessId,
+          creatives: batch,
+          is_last_batch: isLastBatch,
+        }
+        if (lastParsed?.brand?.id) {
+          body.brand_id = lastParsed.brand.id
+        } else {
+          if (brandName) body.brand_name = brandName
+          if (adsLibraryUrl) body.ads_library_url = adsLibraryUrl
+        }
+        const bodyStr = JSON.stringify(body)
+        const bodyBytes = new TextEncoder().encode(bodyStr).length
+        if (bodyBytes > PAYLOAD_LIMIT && batch.length > 1) {
+          const mid = Math.ceil(batch.length / 2)
+          const first = await sendBatch(batch.slice(0, mid), false)
+          if (first && !first.success) return first
+          if (first) lastParsed = first
+          return sendBatch(batch.slice(mid), isLastBatch)
+        }
+
+        const response = await fetch("/api/edge/parse-json", {
+          method: "POST",
+          signal: controller.signal,
+          headers: { "Content-Type": "application/json" },
+          body: bodyStr,
+        })
+
+        const text = await response.text().catch(() => "")
+        const parsed = (() => {
+          try {
+            return text ? JSON.parse(text) : null
+          } catch {
+            return null
+          }
+        })()
+
+        if (!response.ok) {
+          const message =
+            parsed?.error?.message ||
+            parsed?.message ||
+            parsed?.error ||
+            (typeof parsed?.error === "string" ? parsed.error : null) ||
+            (text ? text.substring(0, 300) : "Unknown error")
+          const hint = response.status === 413
+            ? " Request too large. Batches are split automatically; try again or use a smaller file."
+            : ""
+          setResult({ success: false, error: `HTTP ${response.status}: ${message}${hint}` })
+          return null
+        }
+
+        if (!parsed) {
+          setResult({
+            success: false,
+            error: `Invalid response (${response.status}): ${text.substring(0, 300)}`,
+          })
+          return null
+        }
+
+        const result = parsed as ParseJsonResult
+        lastParsed = result
+        if (!result.success) {
+          setResult(result)
+          return null
+        }
+        return result
+      }
 
       try {
         for (let i = 0; i < batches.length; i++) {
-          const batch = batches[i]
-          const isLast = i === batches.length - 1
-          const body: Record<string, unknown> = {
-            business_id: businessId,
-            creatives: batch,
-            is_last_batch: isLast,
-          }
-          if (lastParsed?.brand?.id) {
-            body.brand_id = lastParsed.brand.id
-          } else {
-            if (brandName) body.brand_name = brandName
-            if (adsLibraryUrl) body.ads_library_url = adsLibraryUrl
-          }
-
-          const response = await fetch("/api/edge/parse-json", {
-            method: "POST",
-            signal: controller.signal,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          })
-
-          const text = await response.text().catch(() => "")
-          const parsed = (() => {
-            try {
-              return text ? JSON.parse(text) : null
-            } catch {
-              return null
-            }
-          })()
-
-          if (!response.ok) {
-            const message =
-              parsed?.error?.message ||
-              parsed?.message ||
-              parsed?.error ||
-              (typeof parsed?.error === "string" ? parsed.error : null) ||
-              (text ? text.substring(0, 300) : "Unknown error")
-            const hint = response.status === 413
-              ? " Request too large. The parser uses smaller batches for big files; try again or split your file."
-              : ""
-            setResult({ success: false, error: `HTTP ${response.status}: ${message}${hint}` })
-            return
-          }
-
-          if (!parsed) {
-            setResult({
-              success: false,
-              error: `Invalid response (${response.status}): ${text.substring(0, 300)}`,
-            })
-            return
-          }
-
-          lastParsed = parsed as ParseJsonResult
-          if (!lastParsed.success) {
-            setResult(lastParsed)
-            return
-          }
+          const result = await sendBatch(batches[i], i === batches.length - 1)
+          if (result === null || !result.success) break
         }
       } catch (fetchErr: any) {
         if (fetchErr?.name === "AbortError") {
