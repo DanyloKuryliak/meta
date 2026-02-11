@@ -46,16 +46,11 @@ export function ParseJsonForm({
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<ParseJsonResult | null>(null)
 
-  const MAX_FILE_SIZE_MB = 4
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
       if (file.type !== "application/json" && !file.name.endsWith(".json")) {
         setResult({ success: false, error: "Please select a JSON file" })
-        return
-      }
-      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        setResult({ success: false, error: `File too large. Maximum ${MAX_FILE_SIZE_MB}MB. Split your dataset or use a smaller export.` })
         return
       }
       setJsonFile(file)
@@ -68,7 +63,8 @@ export function ParseJsonForm({
     setIsLoading(true)
     setResult(null)
 
-    if (!selectedBusinessId) {
+    const businessId = selectedBusinessId?.trim()
+    if (!businessId || businessId === "none") {
       setResult({ success: false, error: "Please select a business" })
       setIsLoading(false)
       return
@@ -87,16 +83,17 @@ export function ParseJsonForm({
       
       try {
         const parsed = JSON.parse(fileContent)
-        // Handle both array and object with creatives property
+        // Handle: raw array, {creatives}, {data}, or {items} (Apify Facebook Ads Library scraper)
         if (Array.isArray(parsed)) {
           creatives = parsed
         } else if (parsed.creatives && Array.isArray(parsed.creatives)) {
           creatives = parsed.creatives
         } else if (parsed.data && Array.isArray(parsed.data)) {
-          // Handle Apify dataset format
           creatives = parsed.data
+        } else if (parsed.items && Array.isArray(parsed.items)) {
+          creatives = parsed.items
         } else {
-          throw new Error("JSON must contain an array of creatives, a 'creatives' property, or a 'data' property with an array")
+          throw new Error("JSON must contain an array: top-level [...], or {creatives/data/items: [...]}")
         }
       } catch (parseError) {
         throw new Error(`Invalid JSON format: ${parseError instanceof Error ? parseError.message : "Unknown error"}`)
@@ -141,7 +138,7 @@ export function ParseJsonForm({
           signal: controller.signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            business_id: selectedBusinessId,
+            business_id: businessId,
             creatives,
             brand_name: brandName || undefined,
             ads_library_url: adsLibraryUrl || undefined,
@@ -149,7 +146,7 @@ export function ParseJsonForm({
         })
       } catch (fetchErr: any) {
         if (fetchErr?.name === "AbortError") {
-          setResult({ success: false, error: "Request timed out. Try a smaller file (under 4MB) or fewer creatives." })
+          setResult({ success: false, error: "Request timed out. Try a smaller file or fewer creatives." })
           return
         }
         throw fetchErr
@@ -220,7 +217,7 @@ export function ParseJsonForm({
           Parse JSON Creatives
         </CardTitle>
         <CardDescription>
-          Upload a JSON file (max 4MB) with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Use <code>test-sample-creatives.json</code> to verify.
+          Upload a JSON file with creatives. Supported: raw array <code>[...]</code>, <code>&#123;creatives: [...]&#125;</code>, or Apify format <code>&#123;data: [...]&#125;</code>. Use <code>test-sample-creatives.json</code> to verify.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -297,7 +294,7 @@ export function ParseJsonForm({
 
           <Button 
             type="submit" 
-            disabled={isLoading || !selectedBusinessId || !jsonFile}
+            disabled={isLoading || !selectedBusinessId?.trim() || selectedBusinessId === "none" || !jsonFile}
             className="w-full md:w-auto"
           >
             {isLoading ? (

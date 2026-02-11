@@ -73,20 +73,16 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
   // Update selectedBusinessIds when dropdown selection changes
   React.useEffect(() => {
     if (!businesses) return
-    
-    if (selectedBusinessForBrands && selectedBusinessForBrands !== "all") {
-      // Filter to show only selected business
+
+    if (selectedBusinessForBrands) {
       setSelectedBusinessIds(new Set([selectedBusinessForBrands]))
       mutate("creative-summary")
       mutate("funnel-summary")
-    } else if (selectedBusinessForBrands === "all") {
-      // Show all businesses
-      setSelectedBusinessIds(new Set(businesses.map(b => b.id)))
-      mutate("creative-summary")
-      mutate("funnel-summary")
-    } else if (!selectedBusinessForBrands || selectedBusinessForBrands === "") {
-      // No selection - show nothing
-      setSelectedBusinessIds(new Set())
+    } else {
+      // No selection - default to first business
+      const defaultId = businesses[0]?.id
+      setSelectedBusinessIds(defaultId ? new Set([defaultId]) : new Set())
+      setSelectedBusinessForBrands(defaultId || "")
       mutate("creative-summary")
       mutate("funnel-summary")
     }
@@ -218,12 +214,11 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
                 <Label htmlFor="business-selector" className="text-sm font-medium whitespace-nowrap">
                   Select Business:
                 </Label>
-                <Select value={selectedBusinessForBrands || undefined} onValueChange={(value) => setSelectedBusinessForBrands(value === "all" ? "" : value)}>
+                <Select value={selectedBusinessForBrands || undefined} onValueChange={setSelectedBusinessForBrands}>
                   <SelectTrigger id="business-selector" className="w-[250px] bg-muted border-border">
                     <SelectValue placeholder="Choose a business to view brands" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All Businesses</SelectItem>
                     {businesses.map((business) => (
                       <SelectItem key={business.id} value={business.id}>
                         {business.business_name}

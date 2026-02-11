@@ -82,14 +82,36 @@ export async function POST(request: NextRequest) {
     return res
   }
 
-  const body = await request.json().catch(() => null)
-  const business_id = typeof body?.business_id === "string" ? body.business_id : ""
+  let body: Record<string, unknown> | null = null
+  try {
+    body = await request.json()
+  } catch (parseErr) {
+    const res = NextResponse.json(
+      { error: "Invalid JSON or request body too large. Try a smaller file or check the format." },
+      { status: 400 }
+    )
+    cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
+    return res
+  }
+
+  const business_id = typeof body?.business_id === "string" ? body.business_id.trim() : ""
   const creatives = Array.isArray(body?.creatives) ? body.creatives : null
   const brand_name = typeof body?.brand_name === "string" ? body.brand_name : undefined
   const ads_library_url = typeof body?.ads_library_url === "string" ? body.ads_library_url : undefined
 
-  if (!business_id || !creatives?.length) {
-    const res = NextResponse.json({ error: "Missing business_id or creatives" }, { status: 400 })
+  if (!business_id || business_id === "none") {
+    const res = NextResponse.json(
+      { error: "Missing business_id. Please select a business." },
+      { status: 400 }
+    )
+    cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
+    return res
+  }
+  if (!creatives?.length) {
+    const res = NextResponse.json(
+      { error: "Missing creatives. The JSON file must contain an array of creatives." },
+      { status: 400 }
+    )
     cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
     return res
   }
@@ -107,13 +129,9 @@ export async function POST(request: NextRequest) {
 
   const isShared = Boolean((business as any).is_shared)
   const ownerId = (business as any).user_id
-  if (isShared && !isAdmin) {
-    const res = NextResponse.json({ error: "Forbidden" }, { status: 403 })
-    cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
-    return res
-  }
+  // Allow: owner of private business, or any user for shared business (RLS already filters visibility)
   if (!isShared && ownerId !== user.id) {
-    const res = NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    const res = NextResponse.json({ error: "Forbidden. You can only parse JSON into businesses you own." }, { status: 403 })
     cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
     return res
   }
