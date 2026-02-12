@@ -9,9 +9,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, AlertCircle } from "lucide-react"
 import { getSupabaseClient } from "@/lib/supabase/client"
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
-
-type Step = "email" | "verify"
 
 export function LoginForm({
   initialError,
@@ -19,165 +16,140 @@ export function LoginForm({
   const searchParams = useSearchParams()
   const next = searchParams.get("next") || "/"
 
-  const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
-  const [otp, setOtp] = useState("")
+  const [password, setPassword] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [isSignUp, setIsSignUp] = useState(false)
   const [error, setError] = useState<string | null>(initialError ?? null)
 
   useEffect(() => {
     setError(initialError ?? null)
   }, [initialError])
 
-  const handleEmailSubmit = async (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!email?.trim()) return
+    if (!email?.trim() || !password) return
 
     setIsLoading(true)
     setError(null)
     try {
       const supabase = getSupabaseClient()
-      const { error: otpError } = await supabase.auth.signInWithOtp({
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
-        options: { shouldCreateUser: true },
+        password,
       })
-      if (otpError) throw otpError
-      setStep("verify")
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to send verification code")
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const OTP_LENGTH = 8
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const code = otp.replace(/\s/g, "")
-    if (code.length !== OTP_LENGTH) {
-      setError(`Please enter the ${OTP_LENGTH}-digit code`)
-      return
-    }
-    setIsLoading(true)
-    setError(null)
-    try {
-      const supabase = getSupabaseClient()
-      const { data, error: verifyError } = await supabase.auth.verifyOtp({
-        email: email.trim(),
-        token: code,
-        type: "email",
-      })
-      if (verifyError) throw verifyError
+      if (signInError) throw signInError
       if (data?.session) {
         window.location.assign(next)
         return
       }
-      throw new Error("Verification failed. Please try again.")
+      throw new Error("Sign in failed")
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Invalid or expired code")
+      setError(err instanceof Error ? err.message : "Invalid email or password")
     } finally {
       setIsLoading(false)
     }
   }
 
-  const handleBackToEmail = () => {
-    setStep("email")
-    setOtp("")
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email?.trim() || !password) return
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters")
+      return
+    }
+
+    setIsLoading(true)
     setError(null)
+    try {
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || "Sign up failed")
+
+      const supabase = getSupabaseClient()
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+      if (signInError) throw signInError
+      window.location.assign(next)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Sign up failed")
+    } finally {
+      setIsLoading(false)
+    }
   }
+
+  const handleSubmit = isSignUp ? handleSignUp : handleSignIn
 
   return (
     <Card className="w-full max-w-md mx-auto">
       <CardHeader>
-        <CardTitle>Sign in</CardTitle>
+        <CardTitle>{isSignUp ? "Sign up" : "Sign in"}</CardTitle>
         <CardDescription>
-          {step === "email" && "Enter your email to receive a verification code"}
-          {step === "verify" && `Enter the 8-digit code we sent to ${email}`}
+          {isSignUp
+            ? "Create an account with your email and password"
+            : "Enter your email and password"}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {step === "email" && (
-          <form onSubmit={handleEmailSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                autoFocus
-                className="bg-muted border-border"
-              />
-            </div>
-            <Button type="submit" disabled={isLoading} className="w-full">
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              autoFocus
+              className="bg-muted border-border"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              className="bg-muted border-border"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button type="submit" disabled={isLoading} className="flex-1">
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Sending code...
+                  {isSignUp ? "Creating account..." : "Signing in..."}
                 </>
+              ) : isSignUp ? (
+                "Sign up"
               ) : (
-                "Send verification code"
+                "Sign in"
               )}
             </Button>
-          </form>
-        )}
-
-        {step === "verify" && (
-          <form onSubmit={handleVerifyOtp} className="space-y-4">
-            <div className="space-y-2">
-              <Label>Verification code</Label>
-              <div className="flex justify-center">
-                <InputOTP
-                  maxLength={OTP_LENGTH}
-                  value={otp}
-                  onChange={setOtp}
-                  pattern="[0-9]*"
-                  inputMode="numeric"
-                >
-                  <InputOTPGroup className="gap-1">
-                    {[...Array(OTP_LENGTH)].map((_, i) => (
-                      <InputOTPSlot key={i} index={i} />
-                    ))}
-                  </InputOTPGroup>
-                </InputOTP>
-              </div>
-              <p className="text-xs text-muted-foreground text-center">
-                Enter the 8-digit code sent to your email
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                type="submit"
-                disabled={isLoading || otp.length !== OTP_LENGTH}
-                className="flex-1"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Verifying...
-                  </>
-                ) : (
-                  "Verify"
-                )}
-              </Button>
-              <Button type="button" variant="ghost" onClick={handleBackToEmail}>
-                Back
-              </Button>
-            </div>
             <Button
               type="button"
-              variant="link"
-              className="w-full text-sm"
-              onClick={handleEmailSubmit}
+              variant="ghost"
               disabled={isLoading}
+              onClick={() => {
+                setIsSignUp((v) => !v)
+                setError(null)
+              }}
             >
-              Resend code
+              {isSignUp ? "Sign in instead" : "Sign up instead"}
             </Button>
-          </form>
-        )}
+          </div>
+        </form>
 
         {error && (
           <Alert variant="destructive">

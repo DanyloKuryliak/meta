@@ -50,5 +50,5 @@ vercel deploy --prod
 
 1. **Supabase** – Add/verify production redirect URLs above
 2. **Vercel** – Env vars are set; deploy with push or `vercel deploy --prod`
-3. **Admin login** – Use `metacreatives.genesis@gmail.com` + 8-digit OTP (same flow as everyone)
+3. **Admin login** – Same as others: email + password (admin flag is in database)
 4. **Regular users** – Use email + 8-digit verification code
