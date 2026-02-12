@@ -5,11 +5,15 @@
  *
  * Usage:
  *   set -a && source .env.local && set +a
- *   ADMIN_EMAIL="admin@yourdomain.com" ADMIN_PASSWORD="YourStrongPassword" node scripts/bootstrap-admin.mjs
+ *   ADMIN_EMAIL="admin@internal.local" ADMIN_PASSWORD="YourStrongPassword" node scripts/bootstrap-admin.mjs
  *
  * Requires:
  * - NEXT_PUBLIC_SUPABASE_URL
  * - SUPABASE_SERVICE_ROLE_KEY
+ *
+ * After bootstrap, add to .env.local:
+ *   NEXT_PUBLIC_ADMIN_EMAIL=<same as ADMIN_EMAIL>
+ * This enables password sign-in for admin (no OTP sent for that email).
  */
 
 import { createClient } from '@supabase/supabase-js'

@@ -11,6 +11,7 @@ import { AddBusinessForm } from "./add-business-form"
 import { ParseJsonForm } from "./parse-json-form"
 import { BarChart3, Fuel as Funnel, ChevronRight, ChevronDown, Building2, Plus, Upload, Settings } from "lucide-react"
 import { BusinessManagement } from "./business-management"
+import { UserAccessManagement } from "./user-access-management"
 import { useSWRConfig } from "swr"
 import useSWR from "swr"
 import { getSupabaseClient } from "@/lib/supabase/client"
@@ -296,7 +297,10 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
           </TabsContent>
 
           <TabsContent value="management">
-            <BusinessManagement />
+            <div className="space-y-6">
+              {isAdmin && <UserAccessManagement />}
+              <BusinessManagement />
+            </div>
           </TabsContent>
         </Tabs>
       </main>

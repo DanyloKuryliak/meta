@@ -7,10 +7,11 @@ export default async function LoginPage({
 }) {
   const sp = await searchParams
   const error = sp?.error
+  const adminEmail = (process.env.NEXT_PUBLIC_ADMIN_EMAIL ?? "").trim().toLowerCase() || null
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <LoginForm initialError={error} />
+      <LoginForm initialError={error} adminEmail={adminEmail} />
     </div>
   )
 }
