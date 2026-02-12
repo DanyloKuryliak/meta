@@ -1,6 +1,6 @@
 # Auth Setup Guide
 
-This app uses **email + 8-digit verification code** for sign-in. Admins use a synthetic email with password (no OTP).
+This app uses **email + 8-digit verification code** for sign-in. Everyone (including admin) uses the same OTP flow.
 
 ## 1. Supabase Dashboard
 
@@ -32,33 +32,30 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-### Admin synthetic email
+### Admin email
 
-Admin account: `admin@genesis.local` (password set via bootstrap). No OTP is sent for this email.
+Admin is identified by `NEXT_PUBLIC_ADMIN_EMAIL` (e.g. `metacreatives.genesis@gmail.com`). This user gets `is_admin=true` in `user_profiles` and sees all creatives. Admin signs in with OTP like everyone else.
 
-1. Ensure `.env.local` has:
-   ```env
-   NEXT_PUBLIC_ADMIN_EMAIL=admin@genesis.local
-   ```
+```env
+NEXT_PUBLIC_ADMIN_EMAIL=metacreatives.genesis@gmail.com
+```
 
-2. On the login page, enter `admin@genesis.local` → click **Send verification code** → a **password field** appears instead (no email sent). Enter password → sign in.
+To make an existing user the admin after they sign up, run:
 
-This bypasses email rate limits entirely for the admin.
+```bash
+OLD_ADMIN_EMAIL=admin@genesis.local NEW_ADMIN_EMAIL=metacreatives.genesis@gmail.com node scripts/migrate-admin.mjs
+```
+
+This transfers business ownership and sets `is_admin` for the new admin.
 
 ---
 
 ## 3. Flows
 
-### Regular users (verification code)
+### All users (including admin) – verification code
 
 1. Enter email → **Send verification code**
 2. Enter the 8-digit code from the email → **Verify** → signed in
-
-### Admin (synthetic email + password)
-
-1. Enter admin email (`admin@genesis.local`)
-2. Click **Send verification code** → password field appears (no code sent)
-3. Enter password → **Sign in** → signed in
 
 ---
 
@@ -66,8 +63,7 @@ This bypasses email rate limits entirely for the admin.
 
 If you hit "rate limit exceeded" when sending OTP codes:
 
-1. **Admin login** – Use `admin@genesis.local` + password; no email is sent, so no rate limit.
-2. **Soften limits** – Go to [Supabase Dashboard](https://supabase.com/dashboard) → your project → **Authentication** → **Rate Limits**
+1. **Soften limits** – Go to [Supabase Dashboard](https://supabase.com/dashboard) → your project → **Authentication** → **Rate Limits**
    - **OTP**: Increase "OTP per hour" (default 360) if needed
    - **Request interval**: Reduce "Minimum interval between OTP requests" (default 60 seconds) to allow more frequent attempts
-3. **Custom SMTP** – For production, set up custom SMTP (Dashboard → Auth → SMTP) to get higher email limits.
+2. **Custom SMTP** – For production, set up custom SMTP (Dashboard → Auth → SMTP) to get higher email limits.
