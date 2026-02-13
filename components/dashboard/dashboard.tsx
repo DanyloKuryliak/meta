@@ -192,9 +192,6 @@ function DashboardContent({ user, signOut }: { user: NonNullable<ReturnType<type
                 <DialogContent className="max-w-2xl">
                   <DialogHeader>
                     <DialogTitle>Add Competitor</DialogTitle>
-                    <DialogDescription>
-                      Enter a Meta Ads Library URL to track a new competitor's ads and funnels.
-                    </DialogDescription>
                   </DialogHeader>
                   <AddCompetitorForm 
                     onSuccess={handleIngestionSuccess} 

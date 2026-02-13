@@ -6,7 +6,7 @@
  *
  * Usage:
  *   set -a && source .env.local && set +a
- *   OLD_ADMIN_EMAIL=admin@genesis.local NEW_ADMIN_EMAIL=metacreatives.genesis@gmail.com node scripts/migrate-admin.mjs
+ *   OLD_ADMIN_EMAIL=old@example.com NEW_ADMIN_EMAIL=admin@example.com node scripts/migrate-admin.mjs
  *
  * Prerequisites:
  * - NEW_ADMIN_EMAIL must already exist in auth.users (sign up via OTP first on the login page).

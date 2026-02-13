@@ -26,7 +26,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 Admin is determined by `user_profiles.is_admin` in the database (set via bootstrap or migrate scripts). No special env needed for login; use the same email + password flow.
 
 ```env
-NEXT_PUBLIC_ADMIN_EMAIL=metacreatives.genesis@gmail.com
+NEXT_PUBLIC_ADMIN_EMAIL=admin@example.com
 ```
 
 ---

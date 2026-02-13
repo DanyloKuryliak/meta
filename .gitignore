@@ -1,33 +1,28 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Dependencies
+node_modules/
 
-# dependencies
-/node_modules
+# Next.js
+.next/
+out/
 
-# next.js
-/.next/
-/out/
+# Build outputs
+dist/
+build/
 
-# production
-/build
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files
-.env*
+# Environment & secrets (never commit)
+.env
+.env.*
 .env*.local
 
-# vercel
+# Vercel
 .vercel
 
-# Secrets (ensure never committed)
+# Secrets
 *.pem
 *.key
+**/secrets/
 
-# typescript
+# TypeScript
 *.tsbuildinfo
 next-env.d.ts
 
@@ -38,25 +33,26 @@ next-env.d.ts
 supabase/.temp/
 supabase/.env
 
-# Local / IDE
+# IDE & local
 .cursor/
 *.log
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# Test data and datasets
+# Test data, datasets, large files
 test-sample-creatives.json
 dataset_*.json
+*.csv
 
-# Dataset files (large JSON/CSV files)
+# Lock files (use one: npm or pnpm)
+pnpm-lock.yaml
+yarn.lock
+
+# JSON (exceptions for config)
 *.json
 !package.json
 !package-lock.json
 !tsconfig.json
 !components.json
-*.csv
-
-# Build outputs
-dist/
-build/
-out/
-.next/
-node_modules/

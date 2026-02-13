@@ -6,7 +6,7 @@
  *
  * Usage:
  *   set -a && source .env.local && set +a
- *   ADMIN_EMAIL="metacreatives.genesis@gmail.com" ADMIN_PASSWORD="YourPassword123" node scripts/bootstrap-admin.mjs
+ *   ADMIN_EMAIL="admin@example.com" ADMIN_PASSWORD="YourPassword123" node scripts/bootstrap-admin.mjs
  *
  * Requires:
  * - NEXT_PUBLIC_SUPABASE_URL

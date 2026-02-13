@@ -40,6 +40,8 @@ export async function POST(request: NextRequest) {
   const business_id = typeof body?.business_id === "string" ? body.business_id : ""
   const ads_library_url = typeof body?.ads_library_url === "string" ? body.ads_library_url : ""
   const brand_name = typeof body?.brand_name === "string" ? body.brand_name : undefined
+  const rawCount = typeof body?.count === "number" ? body.count : typeof body?.count === "string" ? parseInt(body.count, 10) : 500
+  const count = rawCount != null && !isNaN(rawCount) && rawCount > 0 ? Math.min(25000, Math.floor(rawCount)) : 500
 
   if (!business_id || !ads_library_url) {
     const res = NextResponse.json(
@@ -91,11 +93,12 @@ export async function POST(request: NextRequest) {
     return res
   }
 
+  // Use service role to invoke; function will use user_id from body (we've already verified user)
   const fnResponse = await fetch(`${url}/functions/v1/ingest_from_url`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      apikey: anonKey,
+      apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
     },
     body: JSON.stringify({
@@ -103,6 +106,7 @@ export async function POST(request: NextRequest) {
       ads_library_url,
       brand_name,
       user_id: user.id,
+      count,
     }),
   })
 

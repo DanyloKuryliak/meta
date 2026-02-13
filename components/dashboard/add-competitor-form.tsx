@@ -63,6 +63,7 @@ export function AddCompetitorForm({
   const { user } = useAuth()
   const [adsLibraryUrl, setAdsLibraryUrl] = useState("")
   const [brandName, setBrandName] = useState("")
+  const [creativesCount, setCreativesCount] = useState<string>("")
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>("")
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<IngestResult | null>(null)
@@ -91,6 +92,8 @@ export function AddCompetitorForm({
     }
 
     try {
+      const countNum = creativesCount.trim() ? parseInt(creativesCount.trim(), 10) : 500
+      const count = countNum != null && !isNaN(countNum) && countNum > 0 ? Math.min(25000, countNum) : 500
       const response = await fetch("/api/edge/ingest-from-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -98,6 +101,7 @@ export function AddCompetitorForm({
           ads_library_url: adsLibraryUrl,
           brand_name: brandName || undefined,
           business_id: selectedBusinessId,
+          count,
         }),
       })
 
@@ -135,6 +139,7 @@ export function AddCompetitorForm({
         // Clear form on success
         setAdsLibraryUrl("")
         setBrandName("")
+        setCreativesCount("")
         setSelectedBusinessId("")
         
         // Call onSuccess callback to refresh dashboard data
@@ -233,18 +238,28 @@ export function AddCompetitorForm({
               ) : brands && brands.length > 0 ? (
                 <div className="border border-border rounded-md p-3 bg-muted/50 max-h-48 overflow-y-auto">
                   <div className="space-y-1">
-                    {brands.map((brand) => (
-                      <div key={brand.id} className="text-sm py-1 px-2 rounded hover:bg-muted">
-                        <span className="font-medium">{brand.brand_name}</span>
-                        {brand.last_fetch_status && (
-                          <span className={`ml-2 text-xs ${
-                            brand.last_fetch_status === "success" ? "text-green-600" : "text-red-600"
-                          }`}>
-                            ({brand.last_fetch_status})
-                          </span>
-                        )}
-                      </div>
-                    ))}
+                    {(() => {
+                      const seen = new Set<string>()
+                      return brands
+                        .filter((brand) => {
+                          const key = (brand.brand_name || "").trim().toLowerCase()
+                          if (!key || seen.has(key)) return false
+                          seen.add(key)
+                          return true
+                        })
+                        .map((brand) => (
+                          <div key={brand.id} className="text-sm py-1 px-2 rounded hover:bg-muted">
+                            <span className="font-medium">{brand.brand_name}</span>
+                            {brand.last_fetch_status && (
+                              <span className={`ml-2 text-xs ${
+                                brand.last_fetch_status === "success" ? "text-green-600" : "text-red-600"
+                              }`}>
+                                ({brand.last_fetch_status})
+                              </span>
+                            )}
+                          </div>
+                        ))
+                    })()}
                   </div>
                 </div>
               ) : (
@@ -252,6 +267,23 @@ export function AddCompetitorForm({
               )}
             </div>
           )}
+
+          <div className="space-y-2">
+            <Label htmlFor="creatives-count">Number of Creatives (Optional)</Label>
+            <Input
+              id="creatives-count"
+              type="number"
+              min={1}
+              max={25000}
+              placeholder="e.g. 300 (default: 500)"
+              value={creativesCount}
+              onChange={(e) => setCreativesCount(e.target.value)}
+              className="bg-muted border-border"
+            />
+            <p className="text-xs text-muted-foreground">
+              Number of creatives for Apify to scrape (default 500 if empty). Max 25000.
+            </p>
+          </div>
 
           <div className="space-y-2">
             <Label htmlFor="brand-name">Brand Name (Optional)</Label>
@@ -264,7 +296,7 @@ export function AddCompetitorForm({
               className="bg-muted border-border"
             />
             <p className="text-xs text-muted-foreground">
-              Leave empty to auto-extract from URL. System will automatically fetch last 30 days of data.
+              Leave empty to auto-extract from URL. Apify scrapes by number of creatives (not by date range).
             </p>
           </div>
 

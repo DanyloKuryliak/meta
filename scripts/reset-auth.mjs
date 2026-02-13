@@ -11,7 +11,7 @@
  *
  * Usage:
  *   set -a && source .env.local && set +a
- *   ADMIN_EMAIL="metacreatives.genesis@gmail.com" ADMIN_PASSWORD="TempPassword123!" node scripts/reset-auth.mjs
+ *   ADMIN_EMAIL="admin@example.com" ADMIN_PASSWORD="TempPassword123!" node scripts/reset-auth.mjs
  *
  * Requires:
  * - NEXT_PUBLIC_SUPABASE_URL
