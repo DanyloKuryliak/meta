@@ -49,6 +49,7 @@ export function ParseJsonForm({
   const [jsonFile, setJsonFile] = useState<File | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<ParseJsonResult | null>(null)
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -66,6 +67,7 @@ export function ParseJsonForm({
     e.preventDefault()
     setIsLoading(true)
     setResult(null)
+    setProgress(null)
 
     const businessId = selectedBusinessId?.trim()
     if (!businessId || businessId === "none") {
@@ -148,23 +150,19 @@ export function ParseJsonForm({
         return
       }
 
-      // Keep each request body well under platform limit (~4.5MB) to avoid 413 FUNCTION_PAYLOAD_TOO_LARGE
+      // Keep each request body well under platform limit (~4.5MB) to avoid 413
       const MAX_BATCH_BYTES = 1.8 * 1024 * 1024 // 1.8MB per request (safe for Vercel/edge)
       const fileSize = jsonFile.size
-      const CHUNK_15MB = 15 * 1024 * 1024
-      const CHUNK_50MB = 50 * 1024 * 1024
-      const maxBatch =
-        fileSize >= CHUNK_50MB ? 50 : fileSize >= CHUNK_15MB ? 80 : 200
       const avgBytesPerCreative = fileSize / creatives.length
-      const sizeBasedBatch = Math.max(15, Math.min(maxBatch, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative)))
-      const BATCH_SIZE = Math.min(maxBatch, sizeBasedBatch)
+      const sizeBasedBatch = Math.max(50, Math.floor(MAX_BATCH_BYTES / avgBytesPerCreative))
+      const BATCH_SIZE = Math.min(800, sizeBasedBatch) // Larger batches = fewer requests = less timeout risk
       const batches: any[][] = []
       for (let i = 0; i < creatives.length; i += BATCH_SIZE) {
         batches.push(creatives.slice(i, i + BATCH_SIZE))
       }
 
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 6 * 60 * 1000)
+      const timeoutId = setTimeout(() => controller.abort(), 20 * 60 * 1000) // 20 min for large files
       let lastParsed: ParseJsonResult | null = null
       const PAYLOAD_LIMIT = Math.floor(MAX_BATCH_BYTES) // bytes; stay under platform 413 limit
 
@@ -237,19 +235,49 @@ export function ParseJsonForm({
         return result
       }
 
-      try {
-        for (let i = 0; i < batches.length; i++) {
-          const result = await sendBatch(batches[i], i === batches.length - 1)
-          if (result === null || !result.success) break
+      const PARALLEL_LIMIT = 4 // Run up to 4 batches concurrently after first
+
+      const runBatchesParallel = async (): Promise<ParseJsonResult | null> => {
+        if (batches.length === 0) return null
+        // First batch establishes brand_id
+        setProgress({ current: 1, total: batches.length })
+        const first = await sendBatch(batches[0], batches.length === 1)
+        if (!first || !first.success) return first
+        lastParsed = first
+        if (batches.length === 1) return first
+        // Remaining batches in parallel with concurrency limit
+        const remaining = batches.slice(1)
+        const results: (ParseJsonResult | null)[] = []
+        for (let i = 0; i < remaining.length; i += PARALLEL_LIMIT) {
+          const chunk = remaining.slice(i, i + PARALLEL_LIMIT)
+          const chunkResults = await Promise.all(
+            chunk.map((batch, j) => {
+              const batchIndex = i + j
+              const isLast = batchIndex === remaining.length - 1
+              return sendBatch(batch, isLast)
+            })
+          )
+          const firstFail = chunkResults.find((r) => r === null || (r && !r.success))
+          if (firstFail !== undefined && (firstFail === null || !firstFail.success))
+            return firstFail
+          results.push(...chunkResults)
+          if (chunkResults[0]) lastParsed = chunkResults[chunkResults.length - 1]!
+          setProgress({ current: Math.min(i + chunk.length + 1, batches.length), total: batches.length })
         }
+        return lastParsed
+      }
+
+      try {
+        await runBatchesParallel()
       } catch (fetchErr: any) {
         if (fetchErr?.name === "AbortError") {
-          setResult({ success: false, error: "Request timed out. Try a smaller file or fewer creatives." })
+          setResult({ success: false, error: "Request timed out after 20 minutes. Try splitting the file or use fewer creatives." })
           return
         }
         throw fetchErr
       } finally {
         clearTimeout(timeoutId)
+        setProgress(null)
       }
 
       if (lastParsed) {
@@ -395,7 +423,7 @@ export function ParseJsonForm({
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Parsing JSON...
+                {progress ? `Parsing batch ${progress.current}/${progress.total}...` : "Parsing JSON..."}
               </>
             ) : (
               <>
